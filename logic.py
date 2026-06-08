@@ -21,7 +21,7 @@ cursor = db.cursor()
 # ---------- PASSWORD HASHING ----------
 def create_secure_password(password: str):
     salt = os.urandom(16)
-    iterations = 100_000
+    iterations = 200_000
 
     hash_value = hashlib.pbkdf2_hmac(
         "sha256",
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS passwords (
 
 # ---------- MASTER PASSWORD SETUP ----------
 cursor.execute("SELECT COUNT(*) FROM security")
-count = cursor.fetchone()[0]
+count = cursor.fetchone()[0]  # type: ignore[attr-defined]
 
 if count == 0:
     print("Table is empty")

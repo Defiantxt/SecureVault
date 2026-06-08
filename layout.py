@@ -77,7 +77,7 @@ img = img.crop(bbox)
 photo = ImageTk.PhotoImage(img)
 
 image_label = tk.Label(main_frame, image=photo, bg="#040d1a")
-image_label.image = photo
+image_label.image = photo  # type: ignore[attr-defined]
 # Image logo
 image = tk.PhotoImage(file="static/logo.png")
 image_label = tk.Label(
@@ -86,7 +86,7 @@ image_label = tk.Label(
     bg="#040d1a",
     borderwidth=0
 )
-image_label.image = photo
+image_label.image = photo  # type: ignore[attr-defined]
 
 image_label.pack()
 
@@ -196,7 +196,7 @@ icon_label = tk.Label(
     bg="#040d1a",
     borderwidth=0
 )
-icon_label.image = image_2
+icon_label.image = image_2  # type: ignore[attr-defined]
 icon_label.pack(side="left", padx=(0, 6))
 
 text_label = tk.Label(
