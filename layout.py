@@ -46,6 +46,7 @@ def unlock():
     if len(password_ent.get()) == 0:
         password_ent.configure(placeholder_text="Nothing was entered!", show="", text_color="#DCDEE1")
 
+
 ct.windll.shcore.SetProcessDpiAwareness(2)
 
 ctk.set_appearance_mode("dark")
@@ -53,7 +54,7 @@ ctk.set_appearance_mode("dark")
 window = tk.Tk()
 window.title("SecureVault")
 width = 800
-height = 950
+height = 975
 
 window.geometry(f"{width}x{height}")
 window.configure(bg="#040d1a")
