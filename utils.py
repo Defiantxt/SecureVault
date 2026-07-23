@@ -65,6 +65,22 @@ def scale(n: Annotated[float | int, "0.0–1.0"]) -> int:
     diagonal = math.sqrt(width ** 2 + height ** 2)
     return int(diagonal * n)
 
+def scale_v(n: Annotated[float | int, "0.0–1.0"]) -> int:
+    """Return `n` as a fraction of the window height, in pixels.
+
+    Used for element sizes (heights, font sizes) so they scale
+    with the window's vertical dimension on different screen
+    resolutions. `n` must be a number between 0.0 and 1.0 inclusive;
+    raises TypeError or ValueError otherwise.
+    """
+    _, height = get_window_size()
+    if not isinstance(n, (float, int)):
+        raise TypeError("n must be a number between 0.0 and 1.0")
+    if not (0.0 <= n <= 1.0):
+        raise ValueError("n must be between 0.0 and 1.0 inclusive")
+
+    return int(height * n)
+
 
 def padx(n: Annotated[float, "0.0–1.0"]) -> int:
     """Return `n` as a fraction of the window width, in pixels.

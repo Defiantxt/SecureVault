@@ -2,27 +2,11 @@ import customtkinter as ctk
 from PIL import Image
 from customtkinter import CTkImage
 from os import listdir
-from utils import set_title_bar_color, scale, padx, pady
-
-
-WINDOW_BACKGROUND = "#040d1a"
-window = ctk.CTk(fg_color=WINDOW_BACKGROUND)
-window.title("SecureVault")
-screen_width = window.winfo_screenwidth()
-screen_height = window.winfo_screenheight()
-
-width = max(700, min(int(screen_width * 0.7), 1200))
-height = max(500, min(int(screen_height * 0.7), 800))
-
-x = (screen_width - width) // 2
-y = (screen_height - height) // 2
-window.geometry(f"{width}x{height}+{x}+{y}")
-set_title_bar_color(window)
-
+from utils import scale, scale_v, padx, pady
 
 # COLORS
 BACKGROUND_COLOR = "#040d1a"
-SIDE_BAR_MAIN_COLOR = "#091221"
+SIDEBAR_MAIN_COLOR = "#091221"
 NAVY_BLUE = "#151D2E"
 
 class Sidebar:
@@ -32,27 +16,31 @@ class Sidebar:
     and wires up icons and hover effects.
     """
 
-    def __init__(self):
+    def __init__(self, window, width, height):
         """Create the sidebar widgets: frames, labels, buttons, and lookup tables.
 
         Note: add_sidebar_btns() grids the nav buttons immediately;
         everything else is placed later by run().
         """
+        self.window = window
+        self.width = width
+        self.height = height
+
         # FRAMES
-        self.main_frm = ctk.CTkFrame(master=window,
+        self.main_frm = ctk.CTkFrame(master=self.window,
                                 fg_color=BACKGROUND_COLOR,
                                 bg_color=BACKGROUND_COLOR,
-                                width=width)
+                                width=self.width)
         self.side_bar_frm = ctk.CTkFrame(master=self.main_frm,
-                                    fg_color=SIDE_BAR_MAIN_COLOR,
-                                    bg_color=SIDE_BAR_MAIN_COLOR,
-                                    height=height)
+                                    fg_color=SIDEBAR_MAIN_COLOR,
+                                    bg_color=SIDEBAR_MAIN_COLOR,
+                                    height=self.height)
         self.logo_frame = ctk.CTkFrame(master=self.side_bar_frm,
                                   fg_color="transparent",
                                   bg_color="transparent")
         self.horizontal_border = ctk.CTkFrame(self.side_bar_frm,
                                          width=scale(0.175),
-                                         height=1,
+                                         height=2,
                                          fg_color=NAVY_BLUE,
                                          corner_radius=0,
                                          )
@@ -68,7 +56,7 @@ class Sidebar:
 
         self.horizontal_border_3 = ctk.CTkFrame(self.side_bar_frm,
                                          width=scale(0.175),
-                                         height=1,
+                                         height=2,
                                          fg_color=NAVY_BLUE,
                                          corner_radius=0)
         self.right_border = ctk.CTkFrame(self.side_bar_frm,
@@ -124,7 +112,7 @@ class Sidebar:
                              text_color="#8E96AE",
                              fg_color="transparent",
                              height=10)
-        self.security_check_label = ctk.CTkLabel(master=self.vault_unlocked_frm, image=self.security_check_image, text="")
+        self.security_check_label = ctk.CTkLabel(master=self.vault_unlocked_frm, image=self.security_check_image, text="",)
 
         self.vault_unlocked_label = ctk.CTkLabel(master=self.vault_unlocked_frm,
                                             text="Vault Unlocked",
@@ -142,9 +130,9 @@ class Sidebar:
         # cTK Buttons
         self.settings = ctk.CTkButton(master=self.side_bar_frm,
                                  text="  Settings",
-                                 fg_color=SIDE_BAR_MAIN_COLOR,
+                                 fg_color=SIDEBAR_MAIN_COLOR,
                                  width=scale(0.2),
-                                 height=scale(0.035),
+                                 height=scale_v(0.067),
                                  hover_color="#34228A",
                                  anchor="w",
                                  font=("Arial", scale(0.0125))
@@ -152,9 +140,9 @@ class Sidebar:
         self.sidebar_btns["settings"] = self.settings  # add "settings" as a cTK Object
         self.lock_vault = ctk.CTkButton(master=self.side_bar_frm,
                                    text="  Lock Vault",
-                                   fg_color=SIDE_BAR_MAIN_COLOR,
+                                   fg_color=SIDEBAR_MAIN_COLOR,
                                    width=scale(0.2),
-                                   height=scale(0.040),
+                                   height=scale_v(0.076),
                                    hover_color="#34228A",
                                    anchor="w",
                                    font=("Arial", scale(0.0125))
@@ -214,8 +202,8 @@ class Sidebar:
             btn = ctk.CTkButton(master=self.side_bar_frm,
                               text=text,
                               width=scale(0.2),
-                              height=scale(0.040),
-                              fg_color=SIDE_BAR_MAIN_COLOR,
+                              height=scale_v(0.076),
+                              fg_color=SIDEBAR_MAIN_COLOR,
                               hover_color="#34228A",
                               anchor="w",
                               font=("Arial", scale(0.0125))
@@ -223,7 +211,7 @@ class Sidebar:
             if i == 0:
                 btn.configure(fg_color="#4236B8",
                               hover_color="#34228A",
-                              height=scale(0.040),
+                              height=scale_v(0.076),
                               anchor="c",
                               font=("Arial", scale(0.0125)),
                               )
@@ -307,10 +295,10 @@ class Sidebar:
         Stores the result as self.security_check_image for use by the
         "Vault Unlocked" status label.
         """
-        security_check_width = scale(0.020)
+        security_check_height = scale_v(0.045)
         security_check = Image.open("static/security_check_main_layout.png")
         security_check = security_check.crop(security_check.getbbox())
-        security_check_height = int(security_check_width * (security_check.height / security_check.width))
+        security_check_width = int(security_check_height * (security_check.width / security_check.height))
         self.security_check_image = CTkImage(light_image=security_check,
                                              dark_image=security_check,
                                              size=(security_check_width, security_check_height))
@@ -325,9 +313,3 @@ class Sidebar:
         self.place_labels()
         self.place_buttons()
 
-
-sidebar = Sidebar()
-if __name__ == "__main__":
-    sidebar.run()
-
-window.mainloop()
