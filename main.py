@@ -7,38 +7,39 @@ from entry_logic import EntryLogic
 
 WINDOW_BACKGROUND = "#040d1a"
 
-# Login window
-login_window = ctk.CTk(fg_color=WINDOW_BACKGROUND)
-login_window.title("SecureVault")
+# Single root window for the whole app (login + main).
+window = ctk.CTk(fg_color=WINDOW_BACKGROUND)
+window.title("SecureVault")
 
-login = Login(login_window)
-login.run()
+login = Login(window)
+login.run()  # builds the login UI and blocks in mainloop until login finishes
 
 vault_key = login.get_vault_key()
 
-# Open main app only if login succeeded
+# Open the main app only if login succeeded
 if vault_key:
-    main_window = ctk.CTk(fg_color=WINDOW_BACKGROUND)
-    main_window.title("SecureVault")
+    # Reuse the same window: clear the login UI before building the main layout.
+    for child in window.winfo_children():
+        child.destroy()
 
-    screen_width = main_window.winfo_screenwidth()
-    screen_height = main_window.winfo_screenheight()
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
 
     width, height = get_window_size()
-
 
     x = (screen_width - width) // 2
     y = (screen_height - height) // 2
 
-    main_window.geometry(f"{width}x{height}+{x}+{y}")
+    window.geometry(f"{width}x{height}+{x}+{y}")
 
-    set_title_bar_color(main_window)
+    set_title_bar_color(window)
 
-    sidebar = Sidebar(main_window, width, height)
-    entries = Entries(main_window, width, height, vault_key)
-    entry_logic = EntryLogic(main_window, width, height)
+    sidebar = Sidebar(window, width, height)
+    entries = Entries(window, width, height, vault_key)
+    entry_logic = EntryLogic(entries)
 
     sidebar.run()
     entries.run()
+    entry_logic.run()
 
-    main_window.mainloop()
+    window.mainloop()

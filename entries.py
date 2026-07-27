@@ -20,9 +20,11 @@ class Entries:
         self.main_frm = ctk.CTkFrame(master=self.window,
                                     fg_color=BACKGROUND_COLOR,
                                     bg_color=BACKGROUND_COLOR,
-                                    width=self.width)
+                                    width=self.width
+                                    )
+        
         self.entries_frm = ctk.CTkFrame(master=self.main_frm,
-                                        fg_color="#FFFFFF",
+                                        fg_color=ENTRIES_MAIN_COLOR,
                                         bg_color=BACKGROUND_COLOR,
                                         )
 
@@ -44,8 +46,8 @@ class Entries:
                                        )
 
     def place_frames(self):
-        self.main_frm.grid(row=0, column=0)
-        self.entries_frm.grid(row=1, column=0)
+        self.main_frm.grid(row=0, column=1)
+        self.entries_frm.grid(row=0, column=0, sticky="nw")
 
     def place_labels(self):
         self.option_selected.grid(row=0, column=0, padx=padx(0.045))

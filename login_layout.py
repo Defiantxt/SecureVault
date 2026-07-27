@@ -255,7 +255,9 @@ class Login:
 
         if key:
             self.vault_key = key
-            self.window.destroy()
+            # Exit the login mainloop (main.py reuses this same window).
+            # Deferred so the button's click animation finishes first.
+            self.window.after(150, self.window.quit)
         else:
             self.password_ent.delete(0, "end")
             self.password_ent.configure(
@@ -290,7 +292,9 @@ class Login:
             self.vault_key = self.logic.setup_master_password(
                 self.password_ent.get()
             )
-            self.window.destroy()
+            # Exit the login mainloop (main.py reuses this same window).
+            # Deferred so the button's click animation finishes first.
+            self.window.after(150, self.window.quit)
 
     def get_vault_key(self):
         return self.vault_key

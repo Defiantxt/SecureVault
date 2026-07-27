@@ -1,12 +1,10 @@
 import sqlite3
-from PIL import Image
-from entries import Entries
-from utils import scale
 import customtkinter as ctk
 
+
 class EntryLogic:
-    def __init__(self, window, width, height):
-        self.entries = Entries(window, width, height, None)
+    def __init__(self, entries):
+        self.entries = entries
         self.db = sqlite3.connect("vault.db")
         self.cursor = self.db.cursor()
 
@@ -14,5 +12,8 @@ class EntryLogic:
         self.cursor.execute("SELECT COUNT(*) FROM passwords")
         count = self.cursor.fetchone()[0]
         if count == 0:
-            self.nothing_added_lbl = ctk.CTkLabel(self.entries.entries_frm, text="No entries added", text_color="turquoise")
+            self.nothing_added_lbl = ctk.CTkLabel(self.entries.entries_frm, text="No entries added", text_color="#000000")
             self.nothing_added_lbl.pack()
+
+    def run(self):
+        self.db_empty()
