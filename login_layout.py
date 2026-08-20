@@ -1,11 +1,10 @@
 import ctypes as ct
-import tkinter as tk
-from PIL import Image, ImageTk
+
 import customtkinter as ctk
+from PIL import Image
 
-from logic import Logic
+from crypto import Crypto
 from utils import padx, pady, scale, scale_v, set_title_bar_color
-
 
 ct.windll.shcore.SetProcessDpiAwareness(2)
 
@@ -13,7 +12,7 @@ ct.windll.shcore.SetProcessDpiAwareness(2)
 class Login:
 
     def __init__(self, window):
-        self.logic = Logic()
+        self.crypto = Crypto()
         self.vault_key = None
 
         ctk.set_appearance_mode("dark")
@@ -39,7 +38,7 @@ class Login:
         self.title_frame = ctk.CTkFrame(
             self.main_frm, fg_color="#040d1a", bg_color="#040d1a"
         )
-        if self.logic.user_exists():
+        if self.crypto.user_exists():
             self.password_frm = ctk.CTkFrame(
                 self.main_frm,
                 width=scale(0.35),
@@ -105,7 +104,7 @@ class Login:
             self.secure_frame, image=self.image_2, text=""
         )
 
-        if self.logic.user_exists():
+        if self.crypto.user_exists():
             self.unlock_vault = ctk.CTkLabel(
                 self.password_frm,
                 text="Unlock Your Vault",
@@ -131,7 +130,7 @@ class Login:
             self.enter_pass = ctk.CTkLabel(
                 self.password_frm,
                 text="Enter a master password to continue",
-                font=("Arial", scale(0.1)),
+                font=("Arial", scale(0.015)),
                 fg_color="transparent",
                 text_color="#DCDEE1",
             )
@@ -215,7 +214,7 @@ class Login:
         self.password_frm.pack(
             pady=(pady(0.0154), pady(0.0154)), padx=padx(0.02)
         )
-        if self.logic.user_exists():
+        if self.crypto.user_exists():
             self.unlock_vault.pack(pady=(pady(0.0308), 0))
             self.enter_pass.pack()
         else:
@@ -229,7 +228,7 @@ class Login:
         self.text_label.pack(side="left", pady=pady(0.04))
 
     def place_buttons(self):
-        if self.logic.user_exists():
+        if self.crypto.user_exists():
             self.unlock_btn.pack()
             self.forgot.pack(pady=pady(0.03))
         else:
@@ -251,7 +250,7 @@ class Login:
             self.password_ent.configure(show="•")
             return
 
-        key = self.logic.verify_master_password_hash(self.password_ent.get())
+        key = self.crypto.verify_master_password_hash(self.password_ent.get())
 
         if key:
             self.vault_key = key
@@ -289,7 +288,7 @@ class Login:
             self.password_ent.configure(show="•")
 
         else:
-            self.vault_key = self.logic.setup_master_password(
+            self.vault_key = self.crypto.setup_master_password(
                 self.password_ent.get()
             )
             # Exit the login mainloop (main.py reuses this same window).
@@ -300,6 +299,18 @@ class Login:
         return self.vault_key
 
     def run(self):
+        self.window.update_idletasks()
+
+        width = self.window.winfo_width()
+        height = self.window.winfo_height()
+
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+
+        self.window.geometry(f"+{x}+{y}")
         self.create_logo()
         self.place_frames()
         self.place_labels()

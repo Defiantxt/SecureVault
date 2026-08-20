@@ -1,9 +1,10 @@
 import customtkinter as ctk
-from utils import set_title_bar_color, get_window_size
-from sidebar import Sidebar
+
 from entries import Entries
-from login_layout import Login
 from entry_logic import EntryLogic
+from login_layout import Login
+from sidebar import Sidebar
+from utils import get_window_size
 
 WINDOW_BACKGROUND = "#040d1a"
 
@@ -22,21 +23,31 @@ if vault_key:
     for child in window.winfo_children():
         child.destroy()
 
+        # Reset any column/row config Login applied to the window
+        for i in range(window.grid_size()[0]):
+            window.grid_columnconfigure(i, weight=0, minsize=0)
+        for i in range(window.grid_size()[1]):
+            window.grid_rowconfigure(i, weight=0, minsize=0)
+
     screen_width = window.winfo_screenwidth()
     screen_height = window.winfo_screenheight()
 
     width, height = get_window_size()
 
-    x = (screen_width - width) // 2
-    y = (screen_height - height) // 2
+    scale = window._get_window_scaling()
+
+    scaled_width = round(width * scale)
+    scaled_height = round(height * scale)
+
+    x = (screen_width - scaled_width) // 2
+    y = (screen_height - scaled_height) // 2
 
     window.geometry(f"{width}x{height}+{x}+{y}")
 
-    set_title_bar_color(window)
-
     sidebar = Sidebar(window, width, height)
     entries = Entries(window, width, height, vault_key)
-    entry_logic = EntryLogic(entries)
+    entry_logic = EntryLogic(window, entries, vault_key)
+    sidebar.sidebar_btns["add_new_ent"].configure(command=entry_logic.add_entry_popup)
 
     sidebar.run()
     entries.run()

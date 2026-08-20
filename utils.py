@@ -2,7 +2,6 @@ import ctypes as ct
 import math
 from typing import Annotated
 
-
 DWMWA_CAPTION_COLOR = 35
 DWMWA_TEXT_COLOR = 36
 

@@ -1,8 +1,11 @@
-import customtkinter as ctk
-from PIL import Image
-from customtkinter import CTkImage
+from functools import partial
 from os import listdir
-from utils import scale, scale_v, padx, pady
+
+import customtkinter as ctk
+from customtkinter import CTkImage
+from PIL import Image
+
+from utils import padx, pady, scale, scale_v
 
 # COLORS
 BACKGROUND_COLOR = "#040d1a"
@@ -25,6 +28,7 @@ class Sidebar:
         self.window = window
         self.width = width
         self.height = height
+        self.last_clicked_btn = None
 
         # FRAMES
         self.main_frm = ctk.CTkFrame(master=self.window,
@@ -48,8 +52,10 @@ class Sidebar:
                                           fg_color="transparent",
                                           bg_color="transparent",
                                           )
-        self.horizontal_border_2 = ctk.CTkFrame(self.main_frm,
-                                         width=scale(0.846),
+        # Full-width top divider: lives in the window (not main_frm) so its
+        # width can't dictate how wide the sidebar column becomes.
+        self.horizontal_border_2 = ctk.CTkFrame(self.window,
+                                         width=1,
                                          height=1,
                                          fg_color=NAVY_BLUE,
                                          corner_radius=0)
@@ -135,9 +141,10 @@ class Sidebar:
                                  height=scale_v(0.067),
                                  hover_color="#34228A",
                                  anchor="w",
-                                 font=("Arial", scale(0.0125))
+                                 font=("Arial", scale(0.0125)),
+                                 command=partial(self.sidebar_button_clicked, "settings")
                                  )
-        self.sidebar_btns["settings"] = self.settings  # add "settings" as a cTK Object
+        self.sidebar_btns["settings"] = self.settings  # add "settings" as a CTk Object
         self.lock_vault = ctk.CTkButton(master=self.side_bar_frm,
                                    text="  Lock Vault",
                                    fg_color=SIDEBAR_MAIN_COLOR,
@@ -145,9 +152,10 @@ class Sidebar:
                                    height=scale_v(0.076),
                                    hover_color="#34228A",
                                    anchor="w",
-                                   font=("Arial", scale(0.0125))
+                                   font=("Arial", scale(0.0125)),
+                                   command=self.window.destroy
                                    )
-        self.sidebar_btns["lock_vault"] = self.lock_vault  # add "lock_vault" as a cTK Object
+        self.sidebar_btns["lock_vault"] = self.lock_vault  # add "lock_vault" as a CTk Object
 
     def create_logo(self):
         """Load the SecureVault logo, crop and scale it, and wrap it in a label.
@@ -185,8 +193,35 @@ class Sidebar:
 
         gray_icon = make_icon(gray_icon_path)
         purple_icon = make_icon(purple_icon_path)
-        button_object.bind("<Enter>", lambda _: button_object.configure(image=purple_icon))
-        button_object.bind("<Leave>", lambda _: button_object.configure(image=gray_icon))
+
+        def on_enter(_):
+            button_object.configure(image=purple_icon)
+
+        def on_leave(_):
+            # Only revert to gray if this button isn't the currently selected one
+            if self.last_clicked_btn != button_key:
+                button_object.configure(image=gray_icon)
+
+        button_object.bind("<Enter>", on_enter)
+        button_object.bind("<Leave>", on_leave)
+
+    def change_image_on_click(self, button_key, gray=False, purple=False):
+        gray_icon_path = f"static/icons/{self.image_labels[button_key]}"
+        purple_icon_path = f"static/icons/purple/{self.image_labels[button_key]}"
+
+        def make_icon(path):
+            img = Image.open(path)
+            img = img.crop(img.getbbox())
+            w = scale(0.015)
+            h = int(w * (img.height / img.width))
+            return CTkImage(light_image=img, dark_image=img, size=(w, h))
+
+        if gray:
+            gray_icon = make_icon(gray_icon_path)
+            self.sidebar_btns[button_key].configure(image=gray_icon)
+        if purple:
+            purple_icon = make_icon(purple_icon_path)
+            self.sidebar_btns[button_key].configure(image=purple_icon)
 
     def add_sidebar_btns(self) -> dict:
         """Create and grid the navigation buttons; return them keyed by name.
@@ -206,7 +241,8 @@ class Sidebar:
                               fg_color=SIDEBAR_MAIN_COLOR,
                               hover_color="#34228A",
                               anchor="w",
-                              font=("Arial", scale(0.0125))
+                              font=("Arial", scale(0.0125)),
+                              command=partial(self.sidebar_button_clicked, key)
                               )
             if i == 0:
                 btn.configure(fg_color="#4236B8",
@@ -214,6 +250,7 @@ class Sidebar:
                               height=scale_v(0.076),
                               anchor="c",
                               font=("Arial", scale(0.0125)),
+                              command=partial(self.sidebar_button_clicked, key)
                               )
                 btn.grid(row=1, column=0, pady=pady(0.025), padx=padx(0.020))
             else:
@@ -250,11 +287,11 @@ class Sidebar:
 
     def place_frames(self) -> None:
         """Grid the layout frames and divider borders into the window."""
-        self.main_frm.grid(row=0, column=0)
+        self.main_frm.grid(row=1, column=0, sticky="nsw")
         self.side_bar_frm.grid(row=0, column=0, sticky="w")
         self.logo_frame.grid(row=0, column=0)
         self.horizontal_border.grid(row=8, column=0, pady=(pady(0.015), pady(0.007)))
-        self.horizontal_border_2.grid(row=0, column=0, columnspan=2, sticky="n")
+        self.horizontal_border_2.grid(row=0, column=0, columnspan=2, sticky="new")
         self.horizontal_border_3.grid(row=11, column=0, pady=(pady(0.015), pady(0.035)))
         self.vault_unlocked_frm.grid(row=12, column=0, padx=(padx(0.013), padx(0.007)), pady=(0, pady(0.035)), sticky="w")
         self.right_border.grid(row=0, rowspan=14, column=1, sticky="nsw")
@@ -296,12 +333,25 @@ class Sidebar:
         "Vault Unlocked" status label.
         """
         security_check_height = scale_v(0.045)
-        security_check = Image.open("static/security_check_main_layout.png")
+        security_check = Image.open("static/security_check.png")
         security_check = security_check.crop(security_check.getbbox())
         security_check_width = int(security_check_height * (security_check.width / security_check.height))
         self.security_check_image = CTkImage(light_image=security_check,
                                              dark_image=security_check,
                                              size=(security_check_width, security_check_height))
+
+    def sidebar_button_clicked(self, button_clicked) -> None:
+        """Highlight the clicked nav button and un-highlight the previously selected one."""
+        if button_clicked == "add_new_ent" or button_clicked == self.last_clicked_btn:
+            return
+
+        if self.last_clicked_btn is not None:
+            self.change_image_on_click(self.last_clicked_btn, gray=True)
+            self.sidebar_btns[self.last_clicked_btn].configure(fg_color=SIDEBAR_MAIN_COLOR)
+
+        self.last_clicked_btn = button_clicked
+        self.change_image_on_click(button_clicked, purple=True)
+        self.sidebar_btns[button_clicked].configure(fg_color="#34228A")
 
     def run(self) -> None:
         """Assemble the sidebar: place all widgets, add icons, and enable hover effects."""
@@ -312,4 +362,4 @@ class Sidebar:
             self.change_image_on_hover(btn, btn_object)
         self.place_labels()
         self.place_buttons()
-
+        self.sidebar_btns["all_ents"].invoke()
