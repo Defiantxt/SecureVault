@@ -177,7 +177,7 @@ class Login:
         )
         self.forgot = ctk.CTkButton(
             self.password_frm,
-            text="Forgot Master Password?",
+            text="About SecureVault security",
             border_color="#08121F",
             bg_color="#08121F",
             fg_color="#08121F",
