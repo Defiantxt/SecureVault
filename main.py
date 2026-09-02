@@ -1,9 +1,11 @@
 import customtkinter as ctk
 
+from app_controller import VaultAppController
 from crypto import zero_vault_key
 from entries import Entries
 from entry_logic import EntryLogic
 from login_layout import Login
+from settings_window import SettingsWindow
 from sidebar import Sidebar
 from utils import get_window_size
 
@@ -22,15 +24,19 @@ vault_key = login.get_vault_key()
 if isinstance(vault_key, bytearray):
     unlocked_key = vault_key
     try:
+        # Purging is intentionally performed only after successful
+        # authentication and before any decrypted records are loaded.
+        login.crypto.purge_expired_trash()
+
         # Reuse the same window: clear the login UI before building the main layout.
         for child in window.winfo_children():
             child.destroy()
 
-            # Reset any column/row config Login applied to the window
-            for i in range(window.grid_size()[0]):
-                window.grid_columnconfigure(i, weight=0, minsize=0)
-            for i in range(window.grid_size()[1]):
-                window.grid_rowconfigure(i, weight=0, minsize=0)
+        # Reset any column/row config Login applied to the window.
+        for i in range(6):
+            window.grid_columnconfigure(i, weight=0, minsize=0)
+        for i in range(6):
+            window.grid_rowconfigure(i, weight=0, minsize=0)
 
         screen_width = window.winfo_screenwidth()
         screen_height = window.winfo_screenheight()
@@ -49,14 +55,30 @@ if isinstance(vault_key, bytearray):
 
         sidebar = Sidebar(window, width, height)
         entries = Entries(window, width, height, unlocked_key)
-        entry_logic = EntryLogic(window, entries, unlocked_key)
+        entry_logic = EntryLogic(
+            window,
+            entries,
+            unlocked_key,
+            crypto=login.crypto,
+        )
+        settings_window = SettingsWindow(
+            window,
+            entry_logic.crypto.get_app_settings,
+            entry_logic.apply_settings,
+        )
 
         def lock_vault() -> None:
             zero_vault_key(unlocked_key)
             window.destroy()
 
-        sidebar.sidebar_btns["add_new_ent"].configure(command=entry_logic.add_entry_popup)
-        sidebar.sidebar_btns["lock_vault"].configure(command=lock_vault)
+        app_controller = VaultAppController(
+            sidebar,
+            entries,
+            entry_logic,
+            settings_window,
+            lock_vault,
+        )
+        app_controller.connect()
 
         sidebar.run()
         entries.run()
@@ -65,3 +87,6 @@ if isinstance(vault_key, bytearray):
         window.mainloop()
     finally:
         zero_vault_key(unlocked_key)
+        login.crypto.close()
+else:
+    login.crypto.close()

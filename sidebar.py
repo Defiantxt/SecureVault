@@ -29,6 +29,7 @@ class Sidebar:
         self.width = width
         self.height = height
         self.last_clicked_btn = None
+        self.action_handler = None
 
         # FRAMES
         self.main_frm = ctk.CTkFrame(master=self.window,
@@ -142,7 +143,7 @@ class Sidebar:
                                  hover_color="#34228A",
                                  anchor="w",
                                  font=("Arial", scale(0.0125)),
-                                 command=partial(self.sidebar_button_clicked, "settings")
+                                 command=partial(self._handle_button_action, "settings")
                                  )
         self.sidebar_btns["settings"] = self.settings  # add "settings" as a CTk Object
         self.lock_vault = ctk.CTkButton(master=self.side_bar_frm,
@@ -153,7 +154,7 @@ class Sidebar:
                                    hover_color="#34228A",
                                    anchor="w",
                                    font=("Arial", scale(0.0125)),
-                                   command=self.window.destroy
+                                   command=partial(self._handle_button_action, "lock_vault")
                                    )
         self.sidebar_btns["lock_vault"] = self.lock_vault  # add "lock_vault" as a CTk Object
 
@@ -242,7 +243,7 @@ class Sidebar:
                               hover_color="#34228A",
                               anchor="w",
                               font=("Arial", scale(0.0125)),
-                              command=partial(self.sidebar_button_clicked, key)
+                              command=partial(self._handle_button_action, key)
                               )
             if i == 0:
                 btn.configure(fg_color="#4236B8",
@@ -250,7 +251,7 @@ class Sidebar:
                               height=scale_v(0.076),
                               anchor="c",
                               font=("Arial", scale(0.0125)),
-                              command=partial(self.sidebar_button_clicked, key)
+                              command=partial(self._handle_button_action, key)
                               )
                 btn.grid(row=1, column=0, pady=pady(0.025), padx=padx(0.020))
             else:
@@ -353,6 +354,30 @@ class Sidebar:
         self.change_image_on_click(button_clicked, purple=True)
         self.sidebar_btns[button_clicked].configure(fg_color="#34228A")
 
+    def set_action_handler(self, handler) -> None:
+        """Register the application-level callback for sidebar actions."""
+
+        self.action_handler = handler
+
+    def _handle_button_action(self, action: str) -> None:
+        """Keep navigation styling and application behavior in one path."""
+
+        navigation_actions = {
+            "all_ents",
+            "favorites",
+            "logins",
+            "cards",
+            "notes",
+            "trash",
+        }
+        if action in navigation_actions:
+            self.sidebar_button_clicked(action)
+
+        if self.action_handler is not None:
+            self.action_handler(action)
+        elif action == "lock_vault":
+            self.window.destroy()
+
     def run(self) -> None:
         """Assemble the sidebar: place all widgets, add icons, and enable hover effects."""
         self.create_logo()
@@ -362,4 +387,4 @@ class Sidebar:
             self.change_image_on_hover(btn, btn_object)
         self.place_labels()
         self.place_buttons()
-        self.sidebar_btns["all_ents"].invoke()
+        self.sidebar_button_clicked("all_ents")

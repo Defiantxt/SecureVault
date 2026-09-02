@@ -1,8 +1,11 @@
 import hashlib
 import hmac
+import math
 import os
 import secrets
 import sqlite3
+import time
+from collections.abc import Callable
 
 import keyring
 from argon2.low_level import Type, hash_secret_raw
@@ -12,6 +15,22 @@ ARGON2_TIME_COST = 3
 ARGON2_MEMORY_COST = 65536
 ARGON2_PARALLELISM = 4
 MASTER_VERIFIER_CONTEXT = b"SecureVault:master-verifier:v1"
+TRASH_RETENTION_SECONDS = 3 * 24 * 60 * 60
+
+PASSWORD_REVEAL_SECONDS = "password_reveal_seconds"
+CLIPBOARD_CLEAR_SECONDS = "clipboard_clear_seconds"
+APP_SETTING_SPECS = {
+    PASSWORD_REVEAL_SECONDS: {
+        "default": 15,
+        "minimum": 5,
+        "maximum": 300,
+    },
+    CLIPBOARD_CLEAR_SECONDS: {
+        "default": 30,
+        "minimum": 5,
+        "maximum": 300,
+    },
+}
 
 
 def zero_vault_key(vault_key: bytearray) -> None:
@@ -20,19 +39,60 @@ def zero_vault_key(vault_key: bytearray) -> None:
 
 
 class Crypto:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        db_path: str | os.PathLike[str] = "vault.db",
+        *,
+        keyring_backend=None,
+        pepper: str | None = None,
+        clock: Callable[[], int | float] | None = None,
+    ) -> None:
+        """Open a vault store and initialize its schema.
+
+        The defaults retain the application's existing behavior. ``db_path``,
+        ``keyring_backend``, ``pepper``, and ``clock`` are injectable so tests
+        and alternate front ends do not need to touch the real vault, OS
+        credential store, or wall clock.
+        """
         self.service_name = "SecureVault"
         self.pepper_account = "vault_pepper"
+        self._keyring = keyring if keyring_backend is None else keyring_backend
+        self._clock = time.time if clock is None else clock
 
-        self.db = sqlite3.connect("vault.db")
+        self.db = sqlite3.connect(os.fspath(db_path))
         self.cursor = self.db.cursor()
 
-        self.cursor.execute("PRAGMA secure_delete = ON")
-        self.create_tables()
-        self.setup_pepper()
+        try:
+            self.cursor.execute("PRAGMA secure_delete = ON")
+            self.create_tables()
+            if pepper is None:
+                self.setup_pepper()
+            else:
+                self.PEPPER = self._validate_pepper(pepper)
+        except Exception:
+            self.db.close()
+            raise
+
+    @staticmethod
+    def _validate_pepper(pepper: str) -> str:
+        if not isinstance(pepper, str):
+            raise TypeError("pepper must be a string")
+        if not pepper:
+            raise ValueError("pepper must not be empty")
+        return pepper
+
+    def close(self) -> None:
+        """Close the SQLite connection owned by this instance."""
+        self.db.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     def setup_pepper(self) -> None:
-        stored_pepper = keyring.get_password(
+        stored_pepper = self._keyring.get_password(
             self.service_name,
             self.pepper_account,
         )
@@ -46,13 +106,13 @@ class Crypto:
 
             stored_pepper = secrets.token_hex(32)
 
-            keyring.set_password(
+            self._keyring.set_password(
                 self.service_name,
                 self.pepper_account,
                 stored_pepper,
             )
 
-        self.PEPPER = stored_pepper
+        self.PEPPER = self._validate_pepper(stored_pepper)
     
     def create_tables(self) -> None:
         self.cursor.execute("""
@@ -73,7 +133,8 @@ class Crypto:
             password_nonce BLOB NOT NULL,
             type_entry BLOB NOT NULL,
             type_nonce BLOB NOT NULL,
-            favorite INTEGER NOT NULL DEFAULT 0
+            favorite INTEGER NOT NULL DEFAULT 0,
+            deleted_at INTEGER DEFAULT NULL
         )
         """)
 
@@ -84,6 +145,38 @@ class Crypto:
                 "ALTER TABLE passwords "
                 "ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
             )
+        if "deleted_at" not in password_columns:
+            self.cursor.execute(
+                "ALTER TABLE passwords "
+                "ADD COLUMN deleted_at INTEGER DEFAULT NULL"
+            )
+
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_passwords_deleted_at
+            ON passwords(deleted_at)
+            WHERE deleted_at IS NOT NULL
+            """
+        )
+
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            )
+            """
+        )
+        self.cursor.executemany(
+            """
+            INSERT OR IGNORE INTO app_settings (key, value)
+            VALUES (?, ?)
+            """,
+            (
+                (name, spec["default"])
+                for name, spec in APP_SETTING_SPECS.items()
+            ),
+        )
 
         self.db.commit()
 
@@ -165,7 +258,7 @@ class Crypto:
             SET name = ?, name_nonce = ?,
                 encrypted_password = ?, password_nonce = ?,
                 type_entry = ?, type_nonce = ?
-            WHERE id = ?
+            WHERE id = ? AND deleted_at IS NULL
             """,
             (
                 name_ciphertext,
@@ -181,22 +274,188 @@ class Crypto:
         self.db.commit()
         return updated
 
-    def delete_entry(self, entry_id: int) -> bool:
-        """Delete one entry by its stable database identifier."""
-        self.cursor.execute("DELETE FROM passwords WHERE id = ?", (entry_id,))
+    @staticmethod
+    def _coerce_epoch_seconds(value: int | float, *, name: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be a number of UTC epoch seconds")
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+
+        epoch = int(value)
+        if epoch < 0:
+            raise ValueError(f"{name} must not be negative")
+        return epoch
+
+    def move_to_trash(
+        self,
+        entry_id: int,
+        deleted_at: int | float | None = None,
+    ) -> bool:
+        """Soft-delete an active entry and clear its favorite state.
+
+        Repeating the operation returns ``False`` and deliberately leaves the
+        original timestamp unchanged, so reopening a stale dialog cannot
+        extend the retention period.
+        """
+        timestamp = self._coerce_epoch_seconds(
+            self._clock() if deleted_at is None else deleted_at,
+            name="deleted_at",
+        )
+        self.cursor.execute(
+            """
+            UPDATE passwords
+            SET deleted_at = ?, favorite = 0
+            WHERE id = ? AND deleted_at IS NULL
+            """,
+            (timestamp, entry_id),
+        )
+        moved = self.cursor.rowcount > 0
+        self.db.commit()
+        return moved
+
+    def delete_entry(
+        self,
+        entry_id: int,
+        deleted_at: int | float | None = None,
+    ) -> bool:
+        """Backward-compatible alias that now moves an entry to trash."""
+        return self.move_to_trash(entry_id, deleted_at)
+
+    def restore_entry(self, entry_id: int) -> bool:
+        """Restore a trashed entry without restoring its favorite state."""
+        self.cursor.execute(
+            """
+            UPDATE passwords
+            SET deleted_at = NULL, favorite = 0
+            WHERE id = ? AND deleted_at IS NOT NULL
+            """,
+            (entry_id,),
+        )
+        restored = self.cursor.rowcount > 0
+        self.db.commit()
+        return restored
+
+    def permanently_delete_entry(self, entry_id: int) -> bool:
+        """Permanently delete an entry only when it is already in trash."""
+        self.cursor.execute(
+            "DELETE FROM passwords WHERE id = ? AND deleted_at IS NOT NULL",
+            (entry_id,),
+        )
         deleted = self.cursor.rowcount > 0
         self.db.commit()
         return deleted
 
-    def set_favorite(self, entry_id: int, favorite: bool) -> bool:
-        """Set an entry's favorite state."""
+    def purge_expired_trash(
+        self,
+        current_epoch: int | float | None = None,
+    ) -> int:
+        """Permanently remove trash aged exactly three days or more."""
+        now = self._coerce_epoch_seconds(
+            self._clock() if current_epoch is None else current_epoch,
+            name="current_epoch",
+        )
+        cutoff = now - TRASH_RETENTION_SECONDS
         self.cursor.execute(
-            "UPDATE passwords SET favorite = ? WHERE id = ?",
+            """
+            DELETE FROM passwords
+            WHERE deleted_at IS NOT NULL AND deleted_at <= ?
+            """,
+            (cutoff,),
+        )
+        purged = self.cursor.rowcount
+        self.db.commit()
+        return purged
+
+    def set_favorite(self, entry_id: int, favorite: bool) -> bool:
+        """Set an active entry's favorite state; trash is immutable here."""
+        self.cursor.execute(
+            """
+            UPDATE passwords
+            SET favorite = ?
+            WHERE id = ? AND deleted_at IS NULL
+            """,
             (int(bool(favorite)), entry_id),
         )
         updated = self.cursor.rowcount > 0
         self.db.commit()
         return updated
+
+    @staticmethod
+    def _validate_setting_value(name: str, value: int) -> int:
+        if name not in APP_SETTING_SPECS:
+            raise KeyError(f"Unknown app setting: {name}")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer number of seconds")
+
+        spec = APP_SETTING_SPECS[name]
+        minimum = spec["minimum"]
+        maximum = spec["maximum"]
+        if not minimum <= value <= maximum:
+            raise ValueError(
+                f"{name} must be between {minimum} and {maximum} seconds"
+            )
+        return value
+
+    def get_setting(self, name: str) -> int:
+        """Read a validated setting, falling back to its secure default."""
+        if name not in APP_SETTING_SPECS:
+            raise KeyError(f"Unknown app setting: {name}")
+
+        self.cursor.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            (name,),
+        )
+        row = self.cursor.fetchone()
+        if row is None:
+            return APP_SETTING_SPECS[name]["default"]
+
+        try:
+            return self._validate_setting_value(name, row[0])
+        except (TypeError, ValueError):
+            # A corrupt or manually edited database must not silently disable
+            # the application's short secret-exposure timeouts.
+            return APP_SETTING_SPECS[name]["default"]
+
+    def set_setting(self, name: str, value: int) -> bool:
+        """Validate and persist one supported non-secret app setting."""
+        value = self._validate_setting_value(name, value)
+        self.cursor.execute(
+            """
+            INSERT INTO app_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (name, value),
+        )
+        self.db.commit()
+        return True
+
+    def get_app_setting(self, name: str) -> int:
+        """Alias retained for callers that use an app-specific name."""
+        return self.get_setting(name)
+
+    def set_app_setting(self, name: str, value: int) -> bool:
+        """Alias retained for callers that use an app-specific name."""
+        return self.set_setting(name, value)
+
+    def get_app_settings(self) -> dict[str, int]:
+        """Return all supported settings with defaults filled in."""
+        return {
+            name: self.get_setting(name)
+            for name in APP_SETTING_SPECS
+        }
+
+    def get_password_reveal_seconds(self) -> int:
+        return self.get_setting(PASSWORD_REVEAL_SECONDS)
+
+    def set_password_reveal_seconds(self, value: int) -> bool:
+        return self.set_setting(PASSWORD_REVEAL_SECONDS, value)
+
+    def get_clipboard_clear_seconds(self) -> int:
+        return self.get_setting(CLIPBOARD_CLEAR_SECONDS)
+
+    def set_clipboard_clear_seconds(self, value: int) -> bool:
+        return self.set_setting(CLIPBOARD_CLEAR_SECONDS, value)
 
     @staticmethod
     def create_master_verifier(vault_key: bytearray) -> bytes:
@@ -249,13 +508,13 @@ class Crypto:
 
     def decrypt_entry_records(
         self, vault_key: bytearray
-    ) -> dict[int, dict[str, int | str | bool]]:
+    ) -> dict[int, dict[str, int | str | bool | None]]:
         """Decrypt entries keyed by their stable database identifiers."""
         aesgcm = AESGCM(vault_key)
         self.cursor.execute(
             """
             SELECT id, name, name_nonce, encrypted_password, password_nonce,
-                   type_entry, type_nonce, favorite
+                   type_entry, type_nonce, favorite, deleted_at
             FROM passwords
             """
         )
@@ -269,6 +528,7 @@ class Crypto:
             type_entry,
             type_nonce,
             favorite,
+            deleted_at,
         ) in self.cursor.fetchall():
             decrypted_name = aesgcm.decrypt(
                 bytes(name_nonce), bytes(name), None
@@ -289,6 +549,7 @@ class Crypto:
                 "password": decrypted_password,
                 "type": decrypted_type,
                 "favorite": bool(favorite),
+                "deleted_at": deleted_at,
             }
         return records
 
@@ -302,6 +563,7 @@ class Crypto:
                 "type": str(entry["type"]),
             }
             for entry in self.decrypt_entry_records(vault_key).values()
+            if entry["deleted_at"] is None
         }
 
     def decrypt_passwords(

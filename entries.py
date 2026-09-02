@@ -12,6 +12,7 @@ class Entries:
         self.window = window
         self.width = width
         self.height = height
+        self._search_handler = None
 
         # FRAMES
         self.main_frm = ctk.CTkFrame(master=self.window,
@@ -39,8 +40,25 @@ class Entries:
                                        font=("Arial", scale(0.013)),
                                        placeholder_text_color="#8E96AE",
                                        fg_color="transparent",
-                                       border_width=1
+                                       border_width=1,
                                        )
+        self.search_ent.bind("<KeyRelease>", self._on_search_changed)
+
+    def _on_search_changed(self, *_args) -> None:
+        if self._search_handler is not None:
+            self._search_handler(self.search_ent.get())
+
+    def set_search_handler(self, handler) -> None:
+        """Send live search changes to the application controller."""
+
+        self._search_handler = handler
+
+    def set_heading(self, text: str) -> None:
+        self.option_selected.configure(text=text)
+
+    def clear_search(self) -> None:
+        self.search_ent.delete(0, "end")
+        self._on_search_changed()
 
     def place_frames(self):
         # Let the content area follow the window instead of relying on fixed
