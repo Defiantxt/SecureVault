@@ -1,4 +1,5 @@
-import sqlite3
+import tkinter as tk
+
 import customtkinter as ctk
 
 from PIL import Image
@@ -11,34 +12,81 @@ class EntryLogic:
         self.vault_key = vault_key
         self.crypto = Crypto()
         self.window = window
-        self.data = self.crypto.decrypt_passwords(self.vault_key)
         self.entries = entries
-        self.db = sqlite3.connect("vault.db")
-        self.cursor = self.db.cursor()
-        self.entries_data: dict[object, object] = {}
+        self.entry_records: dict[int, dict[str, object]] = {}
+        self.entry_details: dict[str, dict[str, object]] = {}
+        self.data: dict[str, str] = {}
+        self._reload_entry_records()
+        self.entries_data: dict[int, ctk.CTkFrame] = {}
+        self.entry_favorite_btns: dict[int, ctk.CTkButton] = {}
+        self.selected_entry_id: int | None = None
+        self.selected_entry_name: str | None = None
+        self.selected_password = ""
+        self.password_is_visible = False
+        self.password_value_lbl = None
+        self.password_toggle_btn = None
+        self.copy_password_btn = None
+        self.copy_button_default_text = "Copy password"
+        self.note_value_textbox = None
+        self.password_hide_after_id = None
+        self.clipboard_clear_after_id = None
+        self.favorite_btn = None
+        self.edit_dialog = None
+        self.edit_entry_id = None
+        self.edit_name_entry = None
+        self.edit_password_entry = None
+        self.edit_note_textbox = None
+        self.edit_content_lbl = None
+        self.edit_content_frm = None
+        self.edit_content_drafts = {"password": "", "note": ""}
+        self.edit_type_var = None
+        self.edit_error_lbl = None
+        self.delete_dialog = None
+        self.delete_error_lbl = None
+        self.dialog = None
+        self.entry_name_entry = None
+        self.entry_password_entry = None
+        self.entry_note_textbox = None
+        self.add_content_lbl = None
+        self.add_content_frm = None
+        self.add_content_drafts = {"password": "", "note": ""}
+        self.radio_var = None
+        self.add_error_lbl = None
 
         self.BACKGROUND_COLOR = "#050B19"
         self.ENTRIES_MAIN_COLOR = "#0C1424"
+        self.CARD_BORDER_COLOR = "#273550"
+        self.SELECTED_BORDER_COLOR = "#7568F8"
+        self.MUTED_TEXT = "#9AA6BE"
 
         # Frames
         self.entries_frm = ctk.CTkScrollableFrame(
             master=self.entries.entries_frm,
-            border_width=0,
-            border_color="#403C85",
+            border_width=1,
+            border_color=self.CARD_BORDER_COLOR,
             fg_color=self.ENTRIES_MAIN_COLOR,
             bg_color=self.BACKGROUND_COLOR,
-            height=scale_v(0.78),
-            width=scale(0.3)
+            width=scale(0.3),
+            corner_radius=scale(0.01)
         )
 
         self.entries_frm._scrollbar.grid_remove()
+        scroll_border_spacing = self.entries_frm._apply_widget_scaling(
+            self.entries_frm._parent_frame.cget("corner_radius")
+            + self.entries_frm._parent_frame.cget("border_width")
+        )
+        self.entries_frm._parent_canvas.grid_configure(
+            padx=scroll_border_spacing
+        )
 
         self.display_entry_data_frm = ctk.CTkFrame(
             master=self.entries.main_frm,
-            height=scale_v(0.8),
             width=scale(0.25),
             fg_color=self.ENTRIES_MAIN_COLOR,
-            bg_color=self.BACKGROUND_COLOR
+            bg_color=self.BACKGROUND_COLOR,
+            border_width=1,
+            border_color=self.CARD_BORDER_COLOR,
+            corner_radius=scale(0.01)
         )
 
         self.display_entry_data_frm.grid_propagate(False)
@@ -97,19 +145,1220 @@ class EntryLogic:
 
         # Buttons
 
-    def open_entry(self, entry_text):
+    def _reload_entry_records(self) -> None:
+        """Reload records while retaining the legacy name/password mappings."""
+
+        self.entry_records = (
+            self.crypto.decrypt_entry_records(self.vault_key) or {}
+        )
+        self.entry_details = {
+            str(record["name"]): {
+                "password": str(record["password"]),
+                "type": str(record["type"]),
+                "favorite": bool(record["favorite"]),
+            }
+            for record in self.entry_records.values()
+        }
+        self.data = {
+            name: str(details["password"])
+            for name, details in self.entry_details.items()
+        }
+
+    def _select_entry_card(self, entry_id: int) -> None:
+        """Highlight the active entry while returning the others to rest."""
+
+        self.selected_entry_id = entry_id
+        for record_id, entry_frame in self.entries_data.items():
+            is_selected = record_id == entry_id
+            entry_frame.configure(
+                border_color=(
+                    self.SELECTED_BORDER_COLOR
+                    if is_selected
+                    else self.CARD_BORDER_COLOR
+                ),
+                fg_color=("#131C31" if is_selected else self.ENTRIES_MAIN_COLOR)
+            )
+
+    def _resolve_entry_id(self, entry: int | str) -> int | None:
+        """Resolve legacy name callbacks while preferring stable record IDs."""
+
+        if isinstance(entry, int):
+            return entry if entry in self.entry_records else None
+
+        for record_id, record in self.entry_records.items():
+            if record["name"] == entry:
+                return record_id
+        return None
+
+    def _toggle_favorite(self, entry_id: int | None = None) -> None:
+        """Toggle favorite state and redraw the list/detail indicators."""
+
+        record_id = (
+            entry_id if entry_id is not None else self.selected_entry_id
+        )
+        if record_id is None or record_id not in self.entry_records:
+            return
+
+        record = self.entry_records[record_id]
+        new_value = not bool(record["favorite"])
+        if self.crypto.set_favorite(record_id, new_value):
+            record["favorite"] = new_value
+            symbol = "\u2605" if new_value else "\u2606"
+            color = "#FFC83D" if new_value else "#8E9AB2"
+
+            list_button = self.entry_favorite_btns.get(record_id)
+            if list_button is not None:
+                list_button.configure(text=symbol, text_color=color)
+
+            if self.selected_entry_id == record_id and self.favorite_btn:
+                self.favorite_btn.configure(text=symbol, text_color=color)
+
+    def _cancel_password_hide_timer(self) -> None:
+        if self.password_hide_after_id is None:
+            return
+
+        try:
+            self.window.after_cancel(self.password_hide_after_id)
+        except tk.TclError:
+            pass
+        self.password_hide_after_id = None
+
+    def _mask_password(self) -> None:
+        """Mask the current password and reset its reveal control."""
+
+        self.password_hide_after_id = None
+        self.password_is_visible = False
+
+        try:
+            if self.password_value_lbl is not None:
+                self.password_value_lbl.configure(text="\u2022" * 12)
+            if self.password_toggle_btn is not None:
+                self.password_toggle_btn.configure(text="Show")
+        except tk.TclError:
+            # The selected card may have been replaced before the timer fired.
+            pass
+
+    def _toggle_password_visibility(self) -> None:
+        """Reveal briefly or mask the password displayed in the detail card."""
+
+        if self.password_value_lbl is None or self.password_toggle_btn is None:
+            return
+
+        if self.password_is_visible:
+            self._cancel_password_hide_timer()
+            self._mask_password()
+            return
+
+        self.password_is_visible = True
+        self.password_value_lbl.configure(text=self.selected_password)
+        self.password_toggle_btn.configure(text="Hide")
+        self.password_hide_after_id = self.window.after(
+            15000,
+            self._mask_password
+        )
+
+    @staticmethod
+    def _reset_copy_button(button, default_text: str) -> None:
+        try:
+            if button.winfo_exists():
+                button.configure(text=default_text)
+        except tk.TclError:
+            pass
+
+    def _clear_clipboard_if_unchanged(self, copied_password: str) -> None:
+        """Clear only the password this app most recently copied."""
+
+        self.clipboard_clear_after_id = None
+        try:
+            if self.window.clipboard_get() == copied_password:
+                self.window.clipboard_clear()
+        except tk.TclError:
+            # Empty, unavailable, or non-text clipboard content needs no action.
+            pass
+
+    def _copy_password(self) -> None:
+        """Copy the selected password and briefly confirm the action."""
+
+        if not self.selected_password:
+            return
+
+        button = self.copy_password_btn
+        copied_password = self.selected_password
+        default_text = self.copy_button_default_text
+
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(copied_password)
+            self.window.update_idletasks()
+        except tk.TclError:
+            if button is not None:
+                button.configure(text="Copy unavailable")
+                self.window.after(
+                    1600,
+                    lambda current_button=button: self._reset_copy_button(
+                        current_button,
+                        default_text
+                    )
+                )
+            return
+
+        if self.clipboard_clear_after_id is not None:
+            try:
+                self.window.after_cancel(self.clipboard_clear_after_id)
+            except tk.TclError:
+                pass
+
+        self.clipboard_clear_after_id = self.window.after(
+            30000,
+            lambda password=copied_password: self._clear_clipboard_if_unchanged(
+                password
+            )
+        )
+
+        if button is not None:
+            button.configure(text="Copied to clipboard")
+            self.window.after(
+                1600,
+                lambda current_button=button: self._reset_copy_button(
+                    current_button,
+                    default_text
+                )
+            )
+
+    def _render_entry_value(self, content_frm, entry_type: str) -> None:
+        """Render a masked secret or a readable multiline note."""
+
+        is_note = entry_type == "Note"
+        value_section = ctk.CTkFrame(
+            master=content_frm,
+            fg_color="transparent"
+        )
+        value_section.grid(row=2, column=0, sticky="ew")
+        value_section.grid_columnconfigure(0, weight=1)
+
+        value_lbl = ctk.CTkLabel(
+            master=value_section,
+            text="NOTE" if is_note else "PASSWORD",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        )
+        value_lbl.grid(row=0, column=0, sticky="w")
+
+        self.password_value_lbl = None
+        self.password_toggle_btn = None
+        self.note_value_textbox = None
+
+        if is_note:
+            note_box = ctk.CTkTextbox(
+                master=value_section,
+                height=scale_v(0.2),
+                fg_color="#101A2C",
+                border_width=1,
+                border_color=self.CARD_BORDER_COLOR,
+                corner_radius=scale(0.008),
+                text_color="#F2F4FA",
+                font=("Arial", scale(0.011)),
+                wrap="word",
+                scrollbar_button_color="#34425F",
+                scrollbar_button_hover_color="#48597A"
+            )
+            note_box.grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(pady(0.01), 0)
+            )
+            note_box.insert("1.0", self.selected_password)
+            note_box.configure(state="disabled")
+            self.note_value_textbox = note_box
+            self.copy_button_default_text = "Copy note"
+        else:
+            password_box = ctk.CTkFrame(
+                master=value_section,
+                fg_color="#101A2C",
+                border_width=1,
+                border_color=self.CARD_BORDER_COLOR,
+                corner_radius=scale(0.008)
+            )
+            password_box.grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(pady(0.01), 0)
+            )
+            password_box.grid_columnconfigure(0, weight=1)
+
+            self.password_value_lbl = ctk.CTkLabel(
+                master=password_box,
+                text="\u2022" * 12,
+                font=("Consolas", scale(0.012)),
+                text_color="#F2F4FA",
+                anchor="w",
+                justify="left",
+                wraplength=scale(0.135)
+            )
+            self.password_value_lbl.grid(
+                row=0,
+                column=0,
+                sticky="ew",
+                padx=(padx(0.012), padx(0.005)),
+                pady=pady(0.017)
+            )
+
+            self.password_toggle_btn = ctk.CTkButton(
+                master=password_box,
+                text="Show",
+                command=self._toggle_password_visibility,
+                width=scale(0.045),
+                height=scale_v(0.044),
+                fg_color="#202B42",
+                hover_color="#2C3956",
+                border_width=1,
+                border_color="#34425F",
+                corner_radius=scale(0.006),
+                font=("Arial", scale(0.009), "bold"),
+                text_color="#DCE2F0"
+            )
+            self.password_toggle_btn.grid(
+                row=0,
+                column=1,
+                padx=(0, padx(0.008)),
+                pady=pady(0.01)
+            )
+            self.copy_button_default_text = "Copy password"
+
+        self.copy_password_btn = ctk.CTkButton(
+            master=content_frm,
+            text=self.copy_button_default_text,
+            command=self._copy_password,
+            height=scale_v(0.058),
+            fg_color="#4236B8",
+            hover_color="#5044CD",
+            corner_radius=scale(0.008),
+            font=("Arial", scale(0.0115), "bold")
+        )
+        self.copy_password_btn.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(pady(0.02), 0)
+        )
+
+    def open_entry(self, entry: int | str) -> None:
+        """Render a polished detail card for the clicked vault entry."""
+
+        entry_id = self._resolve_entry_id(entry)
+        if entry_id is None:
+            return
+
+        record = self.entry_records[entry_id]
+        entry_text = str(record["name"])
+        password = str(record["password"])
+        entry_type = str(record["type"])
+
+        self._cancel_password_hide_timer()
+        self._select_entry_card(entry_id)
+        self.selected_entry_name = entry_text
+        self.selected_password = password
+        self.password_is_visible = False
+
         for child in self.display_entry_data_frm.winfo_children():
             child.destroy()
 
-        login_name = ctk.CTkLabel(
+        content_frm = ctk.CTkFrame(
             master=self.display_entry_data_frm,
-            text=f"{entry_text} -> {self.data[entry_text]}"
+            fg_color="transparent"
+        )
+        content_frm.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=padx(0.018),
+            pady=pady(0.027)
+        )
+        content_frm.grid_columnconfigure(0, weight=1)
+        content_frm.grid_rowconfigure(5, weight=1)
+
+        header_frm = ctk.CTkFrame(
+            master=content_frm,
+            fg_color="transparent"
+        )
+        header_frm.grid(row=0, column=0, sticky="ew")
+        header_frm.grid_columnconfigure(1, weight=1)
+
+        avatar_size = scale(0.044)
+        avatar_frm = ctk.CTkFrame(
+            master=header_frm,
+            width=avatar_size,
+            height=avatar_size,
+            fg_color="#302966",
+            border_width=1,
+            border_color="#5D52C6",
+            corner_radius=scale(0.012)
+        )
+        avatar_frm.grid(row=0, column=0, rowspan=2, sticky="nw")
+        avatar_frm.grid_propagate(False)
+
+        initial = entry_text.strip()[:1].upper() or "?"
+        avatar_lbl = ctk.CTkLabel(
+            master=avatar_frm,
+            text=initial,
+            font=("Arial", scale(0.022), "bold"),
+            text_color="#C7C1FF"
+        )
+        avatar_lbl.place(relx=0.5, rely=0.5, anchor="center")
+
+        title_lbl = ctk.CTkLabel(
+            master=header_frm,
+            text=entry_text,
+            font=("Arial", scale(0.018), "bold"),
+            text_color="#FFFFFF",
+            anchor="w",
+            justify="left",
+            wraplength=scale(0.15)
+        )
+        title_lbl.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(padx(0.014), 0)
         )
 
-        login_name.grid(row=0, column=0)
+        type_lbl = ctk.CTkLabel(
+            master=header_frm,
+            text=entry_type.upper(),
+            font=("Arial", scale(0.0085), "bold"),
+            text_color="#B8AEFF",
+            fg_color="#272151",
+            corner_radius=scale(0.005),
+            height=scale_v(0.028)
+        )
+        type_lbl.grid(
+            row=1,
+            column=1,
+            sticky="w",
+            padx=(padx(0.014), 0),
+            pady=(pady(0.006), 0),
+            ipadx=padx(0.007)
+        )
+
+        is_favorite = bool(record["favorite"])
+        self.favorite_btn = ctk.CTkButton(
+            master=header_frm,
+            text="\u2605" if is_favorite else "\u2606",
+            command=lambda record_id=entry_id: self._toggle_favorite(
+                record_id
+            ),
+            width=scale(0.035),
+            height=scale_v(0.05),
+            fg_color="transparent",
+            hover_color="#202B42",
+            corner_radius=scale(0.007),
+            font=("Segoe UI Symbol", scale(0.021)),
+            text_color="#FFC83D" if is_favorite else "#8E9AB2"
+        )
+        self.favorite_btn.grid(
+            row=0,
+            column=2,
+            rowspan=2,
+            sticky="ne",
+            padx=(padx(0.006), 0)
+        )
+
+        divider = ctk.CTkFrame(
+            master=content_frm,
+            height=1,
+            fg_color=self.CARD_BORDER_COLOR,
+            corner_radius=0
+        )
+        divider.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(pady(0.035), pady(0.03))
+        )
+
+        self._render_entry_value(content_frm, entry_type)
+
+        security_frm = ctk.CTkFrame(
+            master=content_frm,
+            fg_color="#0D211F",
+            border_width=1,
+            border_color="#17443C",
+            corner_radius=scale(0.008)
+        )
+        security_frm.grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            pady=(pady(0.025), 0)
+        )
+        security_frm.grid_columnconfigure(1, weight=1)
+
+        status_dot = ctk.CTkLabel(
+            master=security_frm,
+            text="\u2022",
+            font=("Arial", scale(0.022), "bold"),
+            text_color="#35D29A",
+            width=scale(0.018)
+        )
+        status_dot.grid(
+            row=0,
+            column=0,
+            padx=(padx(0.01), padx(0.004)),
+            pady=pady(0.012)
+        )
+
+        status_lbl = ctk.CTkLabel(
+            master=security_frm,
+            text="Encrypted and stored securely",
+            font=("Arial", scale(0.0095)),
+            text_color="#8FD8C2",
+            anchor="w",
+            wraplength=scale(0.16)
+        )
+        status_lbl.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(0, padx(0.01)),
+            pady=pady(0.012)
+        )
+
+        hint_text = (
+            "Note content is encrypted and stored securely. Copied notes "
+            "clear from the clipboard after 30 seconds."
+            if entry_type == "Note"
+            else (
+                "Revealed passwords hide after 15 seconds. Copied passwords "
+                "clear after 30 seconds."
+            )
+        )
+        hint_lbl = ctk.CTkLabel(
+            master=content_frm,
+            text=hint_text,
+            font=("Arial", scale(0.009)),
+            text_color="#707C94",
+            justify="left",
+            anchor="sw",
+            wraplength=scale(0.2)
+        )
+        hint_lbl.grid(
+            row=6,
+            column=0,
+            sticky="sew",
+            pady=(0, pady(0.018))
+        )
+
+        actions_frm = ctk.CTkFrame(
+            master=content_frm,
+            fg_color="transparent"
+        )
+        actions_frm.grid(row=7, column=0, sticky="ew")
+        actions_frm.grid_columnconfigure((0, 1), weight=1)
+
+        edit_btn = ctk.CTkButton(
+            master=actions_frm,
+            text="Edit",
+            command=lambda record_id=entry_id: self.edit_entry_popup(
+                record_id
+            ),
+            height=scale_v(0.058),
+            fg_color="#35318A",
+            hover_color="#4540A6",
+            corner_radius=scale(0.008),
+            font=("Arial", scale(0.0115), "bold")
+        )
+        edit_btn.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, padx(0.007))
+        )
+
+        delete_btn = ctk.CTkButton(
+            master=actions_frm,
+            text="Delete",
+            command=lambda record_id=entry_id: self.delete_entry_popup(
+                record_id
+            ),
+            height=scale_v(0.058),
+            fg_color="#3A1E2A",
+            hover_color="#522535",
+            border_width=1,
+            border_color="#6B2B3E",
+            corner_radius=scale(0.008),
+            font=("Arial", scale(0.0115), "bold"),
+            text_color="#FF747D"
+        )
+        delete_btn.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(padx(0.007), 0)
+        )
+
+    def _place_dialog(self, dialog, width: int, height: int) -> None:
+        """Size and center a modal over the SecureVault window."""
+
+        # CustomTkinter redraws the Windows title bar shortly after a
+        # CTkToplevel is created. Build the dialog while hidden so that redraw
+        # cannot return focus to the button which opened it.
+        dialog.withdraw()
+        self.window.update_idletasks()
+        x = self.window.winfo_rootx() + (
+            self.window.winfo_width() - width
+        ) // 2
+        y = self.window.winfo_rooty() + (
+            self.window.winfo_height() - height
+        ) // 2
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+
+    @staticmethod
+    def _show_modal(dialog, focus_widget=None) -> None:
+        """Present a built dialog after CustomTkinter's title-bar redraw."""
+
+        def focus_modal_if_needed() -> None:
+            try:
+                dialog.attributes("-topmost", False)
+                dialog.lift()
+                focused = dialog.focus_displayof()
+                focus_is_inside = (
+                    focused is not None
+                    and focused.winfo_toplevel() == dialog
+                )
+                if not focus_is_inside:
+                    if (
+                        focus_widget is not None
+                        and focus_widget.winfo_exists()
+                    ):
+                        focus_widget.focus_force()
+                    else:
+                        dialog.focus_force()
+            except tk.TclError:
+                pass
+
+        def present() -> None:
+            try:
+                if not dialog.winfo_exists():
+                    return
+                # A brief topmost phase keeps Windows from placing the owner
+                # back over the popup while CustomTkinter finishes its delayed
+                # title-bar work. It is removed immediately after settling.
+                dialog.attributes("-topmost", True)
+                dialog.deiconify()
+                dialog.lift()
+                dialog.grab_set()
+                if focus_widget is not None and focus_widget.winfo_exists():
+                    focus_widget.focus_force()
+                else:
+                    dialog.focus_force()
+                dialog.after(140, focus_modal_if_needed)
+            except tk.TclError:
+                pass
+
+        dialog.after(60, present)
+
+    @staticmethod
+    def _close_dialog(dialog) -> None:
+        try:
+            dialog.grab_release()
+        except tk.TclError:
+            pass
+        dialog.destroy()
+
+    def _close_edit_dialog(self) -> None:
+        """Close the editor and release references to its plaintext fields."""
+
+        if self.edit_dialog is None:
+            return
+
+        try:
+            if self.edit_name_entry is not None:
+                self.edit_name_entry.delete(0, "end")
+            if self.edit_password_entry is not None:
+                self.edit_password_entry.delete(0, "end")
+            if self.edit_note_textbox is not None:
+                self.edit_note_textbox.delete("1.0", "end")
+        except tk.TclError:
+            pass
+
+        dialog = self.edit_dialog
+        self.edit_dialog = None
+        self.edit_entry_id = None
+        self.edit_name_entry = None
+        self.edit_password_entry = None
+        self.edit_note_textbox = None
+        self.edit_content_lbl = None
+        self.edit_content_frm = None
+        self.edit_content_drafts = {"password": "", "note": ""}
+        self.edit_type_var = None
+        self.edit_error_lbl = None
+        self._close_dialog(dialog)
+
+    def _close_delete_dialog(self) -> None:
+        if self.delete_dialog is None:
+            return
+
+        dialog = self.delete_dialog
+        self.delete_dialog = None
+        self.delete_error_lbl = None
+        self._close_dialog(dialog)
+
+    def _close_add_dialog(self) -> None:
+        if self.dialog is None:
+            return
+
+        try:
+            if self.entry_name_entry is not None:
+                self.entry_name_entry.delete(0, "end")
+            if self.entry_password_entry is not None:
+                self.entry_password_entry.delete(0, "end")
+            if self.entry_note_textbox is not None:
+                self.entry_note_textbox.delete("1.0", "end")
+        except tk.TclError:
+            pass
+
+        dialog = self.dialog
+        self.dialog = None
+        self.entry_name_entry = None
+        self.entry_password_entry = None
+        self.entry_note_textbox = None
+        self.add_content_lbl = None
+        self.add_content_frm = None
+        self.add_content_drafts = {"password": "", "note": ""}
+        self.radio_var = None
+        self.add_error_lbl = None
+        self._close_dialog(dialog)
+
+    def _cache_edit_content(self) -> None:
+        """Retain independent drafts when changing an entry's type."""
+
+        try:
+            if self.edit_password_entry is not None:
+                self.edit_content_drafts["password"] = (
+                    self.edit_password_entry.get()
+                )
+            if self.edit_note_textbox is not None:
+                self.edit_content_drafts["note"] = (
+                    self.edit_note_textbox.get("1.0", "end-1c")
+                )
+        except tk.TclError:
+            pass
+
+    def _render_edit_content_input(self, entry_type: str) -> None:
+        """Swap the edit form between a secret field and note editor."""
+
+        if self.edit_content_frm is None or self.edit_content_lbl is None:
+            return
+
+        self._cache_edit_content()
+        for child in self.edit_content_frm.winfo_children():
+            child.destroy()
+
+        self.edit_password_entry = None
+        self.edit_note_textbox = None
+        is_note = entry_type == "Note"
+        self.edit_content_lbl.configure(
+            text="NOTE CONTENT" if is_note else "PASSWORD"
+        )
+
+        if is_note:
+            self.edit_note_textbox = ctk.CTkTextbox(
+                master=self.edit_content_frm,
+                height=scale_v(0.16),
+                fg_color="#101A2C",
+                border_width=1,
+                border_color=self.CARD_BORDER_COLOR,
+                corner_radius=scale(0.007),
+                text_color="#FFFFFF",
+                font=("Arial", scale(0.011)),
+                wrap="word",
+                scrollbar_button_color="#34425F",
+                scrollbar_button_hover_color="#48597A"
+            )
+            self.edit_note_textbox.grid(row=0, column=0, sticky="ew")
+            self.edit_note_textbox.insert(
+                "1.0",
+                self.edit_content_drafts["note"]
+            )
+            self.edit_note_textbox.bind(
+                "<Control-Return>",
+                lambda _event: self._save_edit_shortcut()
+            )
+            self.edit_note_textbox.bind(
+                "<Control-KP_Enter>",
+                lambda _event: self._save_edit_shortcut()
+            )
+            self.edit_note_textbox.after(
+                1,
+                self.edit_note_textbox.focus_set
+            )
+            return
+
+        self.edit_content_frm.grid_columnconfigure(0, weight=1)
+        self.edit_password_entry = ctk.CTkEntry(
+            master=self.edit_content_frm,
+            height=scale_v(0.055),
+            fg_color="#101A2C",
+            border_color=self.CARD_BORDER_COLOR,
+            text_color="#FFFFFF",
+            show="\u2022"
+        )
+        self.edit_password_entry.insert(
+            0,
+            self.edit_content_drafts["password"]
+        )
+        self.edit_password_entry.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, padx(0.008))
+        )
+        self.edit_password_entry.bind(
+            "<Return>",
+            lambda _event: self._save_edit_shortcut()
+        )
+
+        password_visible = False
+
+        def toggle_edit_password() -> None:
+            nonlocal password_visible
+            password_visible = not password_visible
+            if self.edit_password_entry is None:
+                return
+            self.edit_password_entry.configure(
+                show="" if password_visible else "\u2022"
+            )
+            reveal_btn.configure(
+                text="Hide" if password_visible else "Show"
+            )
+
+        reveal_btn = ctk.CTkButton(
+            master=self.edit_content_frm,
+            text="Show",
+            command=toggle_edit_password,
+            width=scale(0.052),
+            height=scale_v(0.055),
+            fg_color="#202B42",
+            hover_color="#2C3956",
+            border_width=1,
+            border_color="#34425F",
+            corner_radius=scale(0.006)
+        )
+        reveal_btn.grid(row=0, column=1)
+
+    def _save_edit_shortcut(self):
+        """Save the current editor without inserting a newline."""
+
+        if self.edit_entry_id is not None:
+            self._save_entry_edits(self.edit_entry_id)
+        return "break"
+
+    def edit_entry_popup(self, entry_id: int) -> None:
+        """Open a styled form for editing an encrypted vault record."""
+
+        record = self.entry_records.get(entry_id)
+        if record is None:
+            return
+
+        self._cancel_password_hide_timer()
+        self._mask_password()
+
+        dialog = ctk.CTkToplevel(
+            master=self.window,
+            fg_color=self.ENTRIES_MAIN_COLOR
+        )
+        dialog.title("Edit entry")
+        self.edit_dialog = dialog
+        self.edit_entry_id = entry_id
+        self._place_dialog(dialog, scale(0.34), scale_v(0.7))
+        dialog.grid_columnconfigure(0, weight=1)
+
+        title_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="Edit vault entry",
+            font=("Arial", scale(0.018), "bold"),
+            text_color="#FFFFFF",
+            anchor="w"
+        )
+        title_lbl.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025),
+            pady=(pady(0.03), pady(0.025))
+        )
+
+        name_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="ENTRY NAME",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        )
+        name_lbl.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025)
+        )
+
+        self.edit_name_entry = ctk.CTkEntry(
+            master=dialog,
+            height=scale_v(0.055),
+            fg_color="#101A2C",
+            border_color=self.CARD_BORDER_COLOR,
+            text_color="#FFFFFF"
+        )
+        self.edit_name_entry.insert(0, str(record["name"]))
+        self.edit_name_entry.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025),
+            pady=(pady(0.008), pady(0.022))
+        )
+
+        type_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="ENTRY TYPE",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        )
+        type_lbl.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025)
+        )
+
+        entry_types = ["Login", "Card", "Note"]
+        selected_type = str(record["type"])
+        if selected_type not in entry_types:
+            entry_types.append(selected_type)
+        self.edit_type_var = ctk.StringVar(value=selected_type)
+        type_menu = ctk.CTkOptionMenu(
+            master=dialog,
+            values=entry_types,
+            variable=self.edit_type_var,
+            command=self._render_edit_content_input,
+            height=scale_v(0.055),
+            fg_color="#202B42",
+            button_color="#4236B8",
+            button_hover_color="#5044CD",
+            dropdown_fg_color="#101A2C"
+        )
+        type_menu.grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025),
+            pady=(pady(0.008), pady(0.022))
+        )
+
+        self.edit_content_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="PASSWORD",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        )
+        self.edit_content_lbl.grid(
+            row=5,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025)
+        )
+
+        self.edit_content_frm = ctk.CTkFrame(
+            master=dialog,
+            fg_color="transparent"
+        )
+        self.edit_content_frm.grid(
+            row=6,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025),
+            pady=(pady(0.008), pady(0.012))
+        )
+        self.edit_content_frm.grid_columnconfigure(0, weight=1)
+        current_content = str(record["password"])
+        self.edit_content_drafts = {
+            "password": current_content,
+            "note": current_content,
+        }
+        self._render_edit_content_input(selected_type)
+
+        self.edit_error_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="",
+            font=("Arial", scale(0.0095)),
+            text_color="#FF747D"
+        )
+        self.edit_error_lbl.grid(
+            row=7,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025)
+        )
+
+        actions_frm = ctk.CTkFrame(
+            master=dialog,
+            fg_color="transparent"
+        )
+        actions_frm.grid(
+            row=8,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025),
+            pady=(pady(0.012), pady(0.03))
+        )
+        actions_frm.grid_columnconfigure((0, 1), weight=1)
+
+        cancel_btn = ctk.CTkButton(
+            master=actions_frm,
+            text="Cancel",
+            command=self._close_edit_dialog,
+            height=scale_v(0.055),
+            fg_color="#202B42",
+            hover_color="#2C3956"
+        )
+        cancel_btn.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, padx(0.007))
+        )
+
+        save_btn = ctk.CTkButton(
+            master=actions_frm,
+            text="Save changes",
+            command=lambda: self._save_entry_edits(entry_id),
+            height=scale_v(0.055),
+            fg_color="#4236B8",
+            hover_color="#5044CD"
+        )
+        save_btn.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(padx(0.007), 0)
+        )
+
+        dialog.protocol(
+            "WM_DELETE_WINDOW",
+            self._close_edit_dialog
+        )
+        dialog.bind(
+            "<Escape>",
+            lambda _event: self._close_edit_dialog()
+        )
+        dialog.bind(
+            "<Control-Return>",
+            lambda _event: self._save_edit_shortcut()
+        )
+        dialog.bind(
+            "<Control-KP_Enter>",
+            lambda _event: self._save_edit_shortcut()
+        )
+        self.edit_name_entry.bind(
+            "<Return>",
+            lambda _event: self._save_edit_shortcut()
+        )
+        self._show_modal(dialog, self.edit_name_entry)
+
+    def _save_entry_edits(self, entry_id: int) -> None:
+        """Validate and persist the edit dialog's encrypted values."""
+
+        if (
+            self.edit_dialog is None
+            or self.edit_name_entry is None
+            or self.edit_type_var is None
+        ):
+            return
+
+        name = self.edit_name_entry.get().strip()
+        entry_type = self.edit_type_var.get()
+        if entry_type == "Note":
+            if self.edit_note_textbox is None:
+                return
+            content = self.edit_note_textbox.get("1.0", "end-1c")
+        else:
+            if self.edit_password_entry is None:
+                return
+            content = self.edit_password_entry.get()
+
+        if not name or not content.strip():
+            if self.edit_error_lbl is not None:
+                self.edit_error_lbl.configure(
+                    text=(
+                        "Entry name and note content are required."
+                        if entry_type == "Note"
+                        else "Entry name and password are required."
+                    )
+                )
+            return
+
+        if not self.crypto.update_entry(
+            self.vault_key,
+            entry_id,
+            name,
+            content,
+            entry_type
+        ):
+            if self.edit_error_lbl is not None:
+                self.edit_error_lbl.configure(
+                    text="This entry no longer exists."
+                )
+            return
+
+        self.selected_entry_id = entry_id
+        self._close_edit_dialog()
+        self.refresh_entries()
+
+    def delete_entry_popup(self, entry_id: int) -> None:
+        """Ask for confirmation before permanently deleting a record."""
+
+        record = self.entry_records.get(entry_id)
+        if record is None:
+            return
+
+        self._cancel_password_hide_timer()
+        self._mask_password()
+
+        dialog = ctk.CTkToplevel(
+            master=self.window,
+            fg_color=self.ENTRIES_MAIN_COLOR
+        )
+        dialog.title("Delete entry")
+        self.delete_dialog = dialog
+        self._place_dialog(dialog, scale(0.29), scale_v(0.34))
+        dialog.grid_columnconfigure(0, weight=1)
+
+        title_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="Delete this entry?",
+            font=("Arial", scale(0.017), "bold"),
+            text_color="#FFFFFF"
+        )
+        title_lbl.grid(
+            row=0,
+            column=0,
+            padx=padx(0.025),
+            pady=(pady(0.035), pady(0.018))
+        )
+
+        message_lbl = ctk.CTkLabel(
+            master=dialog,
+            text=(
+                f'"{record["name"]}" will be removed from your vault. '
+                "This action cannot be undone in SecureVault."
+            ),
+            font=("Arial", scale(0.0105)),
+            text_color=self.MUTED_TEXT,
+            justify="center",
+            wraplength=scale(0.22)
+        )
+        message_lbl.grid(
+            row=1,
+            column=0,
+            padx=padx(0.025),
+            pady=(0, pady(0.012))
+        )
+
+        self.delete_error_lbl = ctk.CTkLabel(
+            master=dialog,
+            text="",
+            font=("Arial", scale(0.0095)),
+            text_color="#FF747D"
+        )
+        self.delete_error_lbl.grid(row=2, column=0)
+
+        actions_frm = ctk.CTkFrame(
+            master=dialog,
+            fg_color="transparent"
+        )
+        actions_frm.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=padx(0.025),
+            pady=(pady(0.012), pady(0.03))
+        )
+        actions_frm.grid_columnconfigure((0, 1), weight=1)
+
+        cancel_btn = ctk.CTkButton(
+            master=actions_frm,
+            text="Cancel",
+            command=self._close_delete_dialog,
+            height=scale_v(0.055),
+            fg_color="#202B42",
+            hover_color="#2C3956"
+        )
+        cancel_btn.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, padx(0.007))
+        )
+
+        delete_btn = ctk.CTkButton(
+            master=actions_frm,
+            text="Delete entry",
+            command=lambda: self._confirm_delete(entry_id),
+            height=scale_v(0.055),
+            fg_color="#8A293C",
+            hover_color="#A5354A",
+            text_color="#FFFFFF"
+        )
+        delete_btn.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(padx(0.007), 0)
+        )
+
+        dialog.protocol(
+            "WM_DELETE_WINDOW",
+            self._close_delete_dialog
+        )
+        dialog.bind(
+            "<Escape>",
+            lambda _event: self._close_delete_dialog()
+        )
+        self._show_modal(dialog, cancel_btn)
+
+    def _confirm_delete(self, entry_id: int) -> None:
+        """Delete the exact record captured by the confirmation dialog."""
+
+        if not self.crypto.delete_entry(entry_id):
+            if self.delete_error_lbl is not None:
+                self.delete_error_lbl.configure(
+                    text="This entry no longer exists."
+                )
+            return
+
+        self._close_delete_dialog()
+
+        if self.selected_entry_id == entry_id:
+            self.selected_entry_id = None
+            self.selected_entry_name = None
+            self.selected_password = ""
+        self.refresh_entries()
 
     def display_entry_data(self):
-        self.display_entry_data_frm.grid(row=1, column=3, sticky="nw")
+        self.display_entry_data_frm.grid(
+            row=1,
+            column=3,
+            sticky="nsew",
+            padx=(0, padx(0.018)),
+            pady=(0, pady(0.02))
+        )
 
         no_entry_selected_height = scale_v(0.2)
         gap = scale_v(0.02)
@@ -156,6 +1405,7 @@ class EntryLogic:
             master=self.display_entry_data_frm,
             text="No entry selected...",
             font=("Arial", scale_v(0.03)),
+            text_color="#D7DCE8",
             image=self.no_entry_selected_img,
             compound="top"
         )
@@ -166,62 +1416,104 @@ class EntryLogic:
         self.no_entry_selected_lbl.grid(row=0, column=0)
 
     def populate_entries(self) -> None:
-        self.cursor.execute("SELECT COUNT(*) FROM passwords")
-        count = self.cursor.fetchone()[0]
+        self.entries_data.clear()
+        self.entry_favorite_btns.clear()
+        self.entries_frm.pack(fill="both", expand=True)
 
-        self.entries_frm.pack(fill="both")
-
-        if count == 0:
+        if not self.entry_records:
             self.nothing_added_lbl.place(
                 relx=0.5,
                 rely=0.5,
                 anchor="center"
             )
 
-        elif self.data is not None:
+        else:
             self.nothing_added_lbl.place_forget()
 
-            for entry in self.data.keys():
+            for entry_id, record in self.entry_records.items():
+                entry_name = str(record["name"])
                 self.entry = ctk.CTkFrame(
                     master=self.entries_frm,
-                    border_width=2,
-                    border_color="#403C85",
+                    border_width=1,
+                    border_color=self.CARD_BORDER_COLOR,
                     fg_color=self.ENTRIES_MAIN_COLOR,
                     bg_color=self.BACKGROUND_COLOR,
-                    width=scale(0.3)
+                    width=scale(0.3),
+                    corner_radius=scale(0.008)
                 )
+                self.entry.grid_columnconfigure(0, weight=1)
 
                 self.entry_lbl = ctk.CTkLabel(
                     master=self.entry,
-                    text=entry,
-                    width=scale(0.45),
-                    height=scale_v(0.1)
+                    text=entry_name,
+                    width=scale(0.2),
+                    height=scale_v(0.075),
+                    font=("Arial", scale(0.012), "bold"),
+                    text_color="#F4F6FB",
+                    anchor="w",
+                    justify="left",
+                    wraplength=scale(0.19)
                 )
+
+                is_favorite = bool(record["favorite"])
+                favorite_btn = ctk.CTkButton(
+                    master=self.entry,
+                    text="\u2605" if is_favorite else "\u2606",
+                    command=lambda record_id=entry_id: self._toggle_favorite(
+                        record_id
+                    ),
+                    width=scale(0.04),
+                    height=scale_v(0.055),
+                    fg_color="transparent",
+                    hover_color="#202B42",
+                    corner_radius=scale(0.006),
+                    font=("Segoe UI Symbol", scale(0.017)),
+                    text_color="#FFC83D" if is_favorite else "#8E9AB2"
+                )
+
+                self.entries_data[entry_id] = self.entry
+                self.entry_favorite_btns[entry_id] = favorite_btn
 
                 self.entry.bind(
                     "<Button-1>",
-                    lambda event, text=entry: self.open_entry(text)
+                    lambda event, record_id=entry_id: self.open_entry(
+                        record_id
+                    )
                 )
 
                 self.entry_lbl.bind(
                     "<Button-1>",
-                    lambda event, text=entry: self.open_entry(text)
+                    lambda event, record_id=entry_id: self.open_entry(
+                        record_id
+                    )
                 )
 
                 self.entry.pack(
+                    fill="x",
                     padx=padx(0.02),
                     pady=pady(0.01)
                 )
 
-                self.entry_lbl.pack(
-                    padx=padx(0.04),
-                    pady=pady(0.01)
+                self.entry_lbl.grid(
+                    row=0,
+                    column=0,
+                    sticky="ew",
+                    padx=(padx(0.018), padx(0.004)),
+                    pady=pady(0.008)
+                )
+
+                favorite_btn.grid(
+                    row=0,
+                    column=1,
+                    padx=(padx(0.004), padx(0.012)),
+                    pady=pady(0.008)
                 )
 
     def refresh_entries(self) -> None:
         """Reload decrypted data and redraw the entries list."""
 
-        self.data = self.crypto.decrypt_passwords(self.vault_key)
+        previous_selection = self.selected_entry_id
+        self._reload_entry_records()
 
         # clear out old entry widgets
         for child in self.entries_frm.winfo_children():
@@ -229,212 +1521,513 @@ class EntryLogic:
 
         self.populate_entries()
 
-    def add_entry(self):
-        if (
-            len(self.entry_password_entry.get()) == 0
-            or len(self.entry_name_entry.get()) == 0
-        ):
-            if len(self.entry_password_entry.get()) == 0:
-                self.entry_password_entry.configure(
-                    placeholder_text="Nothing entered"
-                )
+        if previous_selection in self.entry_records:
+            self.open_entry(previous_selection)
+        else:
+            self._cancel_password_hide_timer()
+            self.selected_entry_id = None
+            self.selected_entry_name = None
+            self.selected_password = ""
+            self.password_is_visible = False
+            self.password_value_lbl = None
+            self.password_toggle_btn = None
+            self.copy_password_btn = None
+            self.copy_button_default_text = "Copy password"
+            self.note_value_textbox = None
+            self.favorite_btn = None
 
-            if len(self.entry_name_entry.get()) == 0:
-                self.entry_name_entry.configure(
-                    placeholder_text="Nothing entered"
-                )
+            for child in self.display_entry_data_frm.winfo_children():
+                child.destroy()
+            self.display_entry_data()
 
+    def _cache_add_content(self) -> None:
+        """Keep Login/Card and Note drafts separate while switching type."""
+
+        try:
+            if self.entry_password_entry is not None:
+                self.add_content_drafts["password"] = (
+                    self.entry_password_entry.get()
+                )
+            if self.entry_note_textbox is not None:
+                self.add_content_drafts["note"] = (
+                    self.entry_note_textbox.get("1.0", "end-1c")
+                )
+        except tk.TclError:
+            pass
+
+    def _save_add_shortcut(self):
+        """Submit Add Entry from a keyboard shortcut."""
+
+        self.add_entry()
+        return "break"
+
+    def _resize_add_dialog(self, is_note: bool) -> None:
+        """Give the multiline editor more room without bloating secrets."""
+
+        if self.dialog is None:
             return
 
-        type_entry = None
+        width = scale(0.39)
+        height = scale_v(0.84 if is_note else 0.68)
+        x = self.window.winfo_rootx() + (
+            self.window.winfo_width() - width
+        ) // 2
+        y = self.window.winfo_rooty() + (
+            self.window.winfo_height() - height
+        ) // 2
+        try:
+            self.dialog.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            pass
 
-        match self.radio_var.get():
-            case 1:
-                type_entry = "Login"
+    def _render_add_content_input(self) -> None:
+        """Show a masked field for secrets or a multiline Note editor."""
 
-            case 2:
-                type_entry = "Card"
+        if (
+            self.add_content_frm is None
+            or self.add_content_lbl is None
+            or self.radio_var is None
+        ):
+            return
 
-            case 3:
-                type_entry = "Note"
+        self._cache_add_content()
+        for child in self.add_content_frm.winfo_children():
+            child.destroy()
 
-        if type_entry:
-            self.crypto.store_entry(
-                self.vault_key,
-                self.entry_name_entry.get(),
-                self.entry_password_entry.get(),
-                type_entry
+        self.entry_password_entry = None
+        self.entry_note_textbox = None
+        is_note = self.radio_var.get() == 3
+        self._resize_add_dialog(is_note)
+        self.add_content_lbl.configure(
+            text="NOTE CONTENT" if is_note else "PASSWORD"
+        )
+
+        if is_note:
+            self.entry_note_textbox = ctk.CTkTextbox(
+                master=self.add_content_frm,
+                height=scale_v(0.17),
+                fg_color="#101A2C",
+                border_width=1,
+                border_color=self.CARD_BORDER_COLOR,
+                corner_radius=scale(0.007),
+                text_color="#FFFFFF",
+                font=("Arial", scale(0.011)),
+                wrap="word",
+                scrollbar_button_color="#34425F",
+                scrollbar_button_hover_color="#48597A"
+            )
+            self.entry_note_textbox.grid(row=0, column=0, sticky="ew")
+            self.entry_note_textbox.insert(
+                "1.0",
+                self.add_content_drafts["note"]
+            )
+            self.entry_note_textbox.bind(
+                "<Control-Return>",
+                lambda _event: self._save_add_shortcut()
+            )
+            self.entry_note_textbox.bind(
+                "<Control-KP_Enter>",
+                lambda _event: self._save_add_shortcut()
+            )
+            self.entry_note_textbox.after(
+                1,
+                self.entry_note_textbox.focus_set
+            )
+            return
+
+        self.add_content_frm.grid_columnconfigure(0, weight=1)
+        self.entry_password_entry = ctk.CTkEntry(
+            master=self.add_content_frm,
+            height=scale_v(0.058),
+            fg_color="#101A2C",
+            border_color=self.CARD_BORDER_COLOR,
+            text_color="#FFFFFF",
+            placeholder_text="Enter a secure password",
+            show="\u2022"
+        )
+        self.entry_password_entry.insert(
+            0,
+            self.add_content_drafts["password"]
+        )
+        self.entry_password_entry.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, padx(0.008))
+        )
+        self.entry_password_entry.bind(
+            "<Return>",
+            lambda _event: self._save_add_shortcut()
+        )
+
+        password_visible = False
+
+        def toggle_add_password() -> None:
+            nonlocal password_visible
+            password_visible = not password_visible
+            if self.entry_password_entry is None:
+                return
+            self.entry_password_entry.configure(
+                show="" if password_visible else "\u2022"
+            )
+            reveal_btn.configure(
+                text="Hide" if password_visible else "Show"
             )
 
-            self.dialog.destroy()
-            self.refresh_entries()
+        reveal_btn = ctk.CTkButton(
+            master=self.add_content_frm,
+            text="Show",
+            command=toggle_add_password,
+            width=scale(0.052),
+            height=scale_v(0.058),
+            fg_color="#202B42",
+            hover_color="#2C3956",
+            border_width=1,
+            border_color="#34425F",
+            corner_radius=scale(0.006),
+            font=("Arial", scale(0.0095), "bold"),
+            text_color="#DCE2F0"
+        )
+        reveal_btn.grid(row=0, column=1)
+
+    def add_entry(self):
+        if self.entry_name_entry is None or self.radio_var is None:
+            return
+
+        entry_name = self.entry_name_entry.get().strip()
+        type_entry = {
+            1: "Login",
+            2: "Card",
+            3: "Note",
+        }.get(self.radio_var.get())
+
+        if type_entry is None:
+            if self.add_error_lbl is not None:
+                self.add_error_lbl.configure(text="Choose an entry type.")
+            return
+
+        if type_entry == "Note":
+            if self.entry_note_textbox is None:
+                return
+            content = self.entry_note_textbox.get("1.0", "end-1c")
+        else:
+            if self.entry_password_entry is None:
+                return
+            content = self.entry_password_entry.get()
+
+        if not entry_name or not content.strip():
+            if self.add_error_lbl is not None:
+                self.add_error_lbl.configure(
+                    text=(
+                        "Entry name and note content are required."
+                        if type_entry == "Note"
+                        else "Entry name and password are required."
+                    )
+                )
+            return
+
+        self.crypto.store_entry(
+            self.vault_key,
+            entry_name,
+            content,
+            type_entry
+        )
+
+        self._close_add_dialog()
+        self.refresh_entries()
 
     def add_entry_popup(self) -> None:
-        self.dialog = ctk.CTkToplevel()
+        if self.dialog is not None:
+            try:
+                if self.dialog.winfo_exists():
+                    self.dialog.deiconify()
+                    self.dialog.lift()
+                    self.dialog.grab_set()
+                    if self.entry_name_entry is not None:
+                        self.entry_name_entry.focus_force()
+                    else:
+                        self.dialog.focus_force()
+                    return
+            except tk.TclError:
+                self.dialog = None
 
-        self.dialog.title("Add Entry")
-        self.dialog.geometry(f"{scale(0.4)}x{scale_v(0.7)}")
-        self.dialog.grid_columnconfigure(0, weight=1)
+        dialog = ctk.CTkToplevel(
+            master=self.window,
+            fg_color=self.BACKGROUND_COLOR
+        )
+        dialog.title("Add vault entry")
+        self.dialog = dialog
+        self._place_dialog(dialog, scale(0.39), scale_v(0.68))
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
 
-        # RADIO BUTTON GROUP
-        self.radio_var = ctk.IntVar(value=0)
-
-        radio_btns_frm = ctk.CTkFrame(master=self.dialog)
-
-        radio_btns_frm.grid(
+        shell = ctk.CTkFrame(
+            master=dialog,
+            fg_color=self.ENTRIES_MAIN_COLOR,
+            border_width=1,
+            border_color=self.CARD_BORDER_COLOR,
+            corner_radius=scale(0.012)
+        )
+        shell.grid(
             row=0,
             column=0,
-            pady=pady(0.02)
+            sticky="nsew",
+            padx=padx(0.012),
+            pady=pady(0.018)
         )
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(2, weight=1)
 
-        type_entry = ctk.CTkLabel(
-            master=radio_btns_frm,
-            text="Type of Entry e.g. Login, Card, Note",
-            font=("Arial", scale(0.015))
-        )
-
-        type_entry.grid(
+        header = ctk.CTkFrame(master=shell, fg_color="transparent")
+        header.grid(
             row=0,
             column=0,
-            columnspan=3,
-            pady=(pady(0.02), pady(0.015)),
-            padx=padx(0.03)
+            sticky="ew",
+            padx=padx(0.024),
+            pady=(pady(0.028), pady(0.022))
         )
+        header.grid_columnconfigure(1, weight=1)
 
-        login_radio_btn = ctk.CTkRadioButton(
-            master=radio_btns_frm,
-            text="Login",
-            value=1,
-            variable=self.radio_var,
-            radiobutton_width=scale(0.013),
-            radiobutton_height=scale(0.013)
+        icon_size = scale(0.04)
+        icon = ctk.CTkFrame(
+            master=header,
+            width=icon_size,
+            height=icon_size,
+            fg_color="#302966",
+            border_width=1,
+            border_color="#5D52C6",
+            corner_radius=scale(0.011)
         )
+        icon.grid(row=0, column=0, rowspan=2)
+        icon.grid_propagate(False)
+        ctk.CTkLabel(
+            master=icon,
+            text="+",
+            font=("Arial", scale(0.024)),
+            text_color="#C7C1FF"
+        ).place(relx=0.5, rely=0.47, anchor="center")
 
-        card_radio_btn = ctk.CTkRadioButton(
-            master=radio_btns_frm,
-            text="Card",
-            value=2,
-            variable=self.radio_var,
-            radiobutton_width=scale(0.013),
-            radiobutton_height=scale(0.013)
+        ctk.CTkLabel(
+            master=header,
+            text="Add a vault entry",
+            font=("Arial", scale(0.018), "bold"),
+            text_color="#FFFFFF",
+            anchor="w"
+        ).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(padx(0.014), 0)
         )
-
-        notes_radio_btn = ctk.CTkRadioButton(
-            master=radio_btns_frm,
-            text="Note",
-            value=3,
-            variable=self.radio_var,
-            radiobutton_width=scale(0.013),
-            radiobutton_height=scale(0.013)
-        )
-
-        login_radio_btn.grid(
-            row=1,
-            column=0,
-            padx=padx(0.02),
-            pady=(0, pady(0.02))
-        )
-
-        card_radio_btn.grid(
+        ctk.CTkLabel(
+            master=header,
+            text="Choose a type and keep the details encrypted.",
+            font=("Arial", scale(0.0095)),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        ).grid(
             row=1,
             column=1,
-            padx=padx(0.02),
-            pady=(0, pady(0.02))
+            sticky="ew",
+            padx=(padx(0.014), 0),
+            pady=(pady(0.004), 0)
         )
 
-        notes_radio_btn.grid(
+        divider = ctk.CTkFrame(
+            master=shell,
+            height=1,
+            fg_color=self.CARD_BORDER_COLOR,
+            corner_radius=0
+        )
+        divider.grid(row=1, column=0, sticky="ew")
+
+        form = ctk.CTkFrame(master=shell, fg_color="transparent")
+        form.grid(
+            row=2,
+            column=0,
+            sticky="new",
+            padx=padx(0.024),
+            pady=(pady(0.022), 0)
+        )
+        form.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            master=form,
+            text="ENTRY TYPE",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        ).grid(row=0, column=0, sticky="ew")
+
+        type_card = ctk.CTkFrame(
+            master=form,
+            fg_color="#101A2C",
+            border_width=1,
+            border_color=self.CARD_BORDER_COLOR,
+            corner_radius=scale(0.008)
+        )
+        type_card.grid(
             row=1,
-            column=2,
-            padx=padx(0.02),
-            pady=(0, pady(0.02))
+            column=0,
+            sticky="ew",
+            pady=(pady(0.009), pady(0.021))
         )
+        type_card.grid_columnconfigure((0, 1, 2), weight=1)
+        self.radio_var = ctk.IntVar(value=1)
 
-        # ENTRY NAME
-        entry_name_lbl = ctk.CTkLabel(
-            master=self.dialog,
-            text="Entry name:",
-            font=("Arial", scale(0.015))
-        )
+        radio_style = {
+            "variable": self.radio_var,
+            "command": self._render_add_content_input,
+            "radiobutton_width": scale(0.016),
+            "radiobutton_height": scale(0.016),
+            "border_width_unchecked": 2,
+            "border_width_checked": 5,
+            "fg_color": self.SELECTED_BORDER_COLOR,
+            "hover_color": "#8B80FF",
+            "border_color": "#687590",
+            "text_color": "#EEF1F8",
+            "font": ("Arial", scale(0.0105), "bold"),
+        }
+        for column, (label, value) in enumerate(
+            (("Login", 1), ("Card", 2), ("Note", 3))
+        ):
+            ctk.CTkRadioButton(
+                master=type_card,
+                text=label,
+                value=value,
+                **radio_style
+            ).grid(
+                row=0,
+                column=column,
+                padx=padx(0.014),
+                pady=pady(0.016)
+            )
+
+        ctk.CTkLabel(
+            master=form,
+            text="ENTRY NAME",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
+        ).grid(row=2, column=0, sticky="ew")
 
         self.entry_name_entry = ctk.CTkEntry(
-            master=self.dialog,
-            width=scale(0.35),
-            placeholder_text="Entry name"
+            master=form,
+            height=scale_v(0.058),
+            fg_color="#101A2C",
+            border_color=self.CARD_BORDER_COLOR,
+            text_color="#FFFFFF",
+            placeholder_text="e.g. Personal email"
         )
-
-        entry_name_lbl.grid(
-            row=1,
-            column=0,
-            pady=pady(0.025)
-        )
-
         self.entry_name_entry.grid(
-            row=2,
-            column=0
-        )
-
-        # ENTRY PASSWORD
-        entry_password_lbl = ctk.CTkLabel(
-            master=self.dialog,
-            text="Entry password:",
-            font=("Arial", scale(0.015))
-        )
-
-        self.entry_password_entry = ctk.CTkEntry(
-            master=self.dialog,
-            width=scale(0.35),
-            placeholder_text="Entry password"
-        )
-
-        entry_password_lbl.grid(
             row=3,
             column=0,
-            pady=(pady(0.06), pady(0.025))
+            sticky="ew",
+            pady=(pady(0.008), pady(0.021))
         )
 
-        self.entry_password_entry.grid(
-            row=4,
-            column=0
+        self.add_content_lbl = ctk.CTkLabel(
+            master=form,
+            text="PASSWORD",
+            font=("Arial", scale(0.009), "bold"),
+            text_color=self.MUTED_TEXT,
+            anchor="w"
         )
+        self.add_content_lbl.grid(row=4, column=0, sticky="ew")
 
-        btns_frm = ctk.CTkFrame(
-            master=self.dialog,
+        self.add_content_frm = ctk.CTkFrame(
+            master=form,
             fg_color="transparent"
         )
-
-        btns_frm.grid(
+        self.add_content_frm.grid(
             row=5,
             column=0,
-            pady=pady(0.035)
+            sticky="ew",
+            pady=(pady(0.008), 0)
+        )
+        self.add_content_frm.grid_columnconfigure(0, weight=1)
+        self.add_content_drafts = {"password": "", "note": ""}
+        self._render_add_content_input()
+
+        self.add_error_lbl = ctk.CTkLabel(
+            master=shell,
+            text="",
+            height=scale_v(0.027),
+            font=("Arial", scale(0.0095)),
+            text_color="#FF747D"
+        )
+        self.add_error_lbl.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=padx(0.024),
+            pady=(pady(0.01), 0)
+        )
+
+        actions = ctk.CTkFrame(master=shell, fg_color="transparent")
+        actions.grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            padx=padx(0.024),
+            pady=(pady(0.01), pady(0.026))
+        )
+        actions.grid_columnconfigure((0, 1), weight=1)
+
+        cancel_btn = ctk.CTkButton(
+            master=actions,
+            text="Cancel",
+            command=self._close_add_dialog,
+            height=scale_v(0.058),
+            fg_color="#202B42",
+            hover_color="#2C3956",
+            border_width=1,
+            border_color="#34425F",
+            corner_radius=scale(0.007),
+            font=("Arial", scale(0.0105), "bold")
+        )
+        cancel_btn.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, padx(0.007))
         )
 
         add_entry_btn = ctk.CTkButton(
-            master=btns_frm,
+            master=actions,
             text="Add entry",
-            command=self.add_entry
+            command=self.add_entry,
+            height=scale_v(0.058),
+            fg_color="#4236B8",
+            hover_color="#5044CD",
+            corner_radius=scale(0.007),
+            font=("Arial", scale(0.0105), "bold")
         )
-
         add_entry_btn.grid(
             row=0,
-            column=0,
-            padx=padx(0.02),
-            ipadx=scale(0.02),
-            ipady=scale_v(0.05)
-        )
-
-        cancel_btn = ctk.CTkButton(
-            master=btns_frm,
-            text="Cancel",
-            command=self.dialog.destroy
-        )
-
-        cancel_btn.grid(
-            row=0,
             column=1,
-            padx=padx(0.02)
+            sticky="ew",
+            padx=(padx(0.007), 0)
         )
 
-        self.dialog.mainloop()
+        dialog.protocol("WM_DELETE_WINDOW", self._close_add_dialog)
+        dialog.bind(
+            "<Escape>",
+            lambda _event: self._close_add_dialog()
+        )
+        dialog.bind(
+            "<Control-Return>",
+            lambda _event: self._save_add_shortcut()
+        )
+        dialog.bind(
+            "<Control-KP_Enter>",
+            lambda _event: self._save_add_shortcut()
+        )
+        self.entry_name_entry.bind(
+            "<Return>",
+            lambda _event: self._save_add_shortcut()
+        )
+        self._show_modal(dialog, self.entry_name_entry)
 
     def run(self) -> None:
         self.populate_entries()

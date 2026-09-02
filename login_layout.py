@@ -13,7 +13,7 @@ class Login:
 
     def __init__(self, window):
         self.crypto = Crypto()
-        self.vault_key = None
+        self.vault_key: bytearray | None = None
 
         ctk.set_appearance_mode("dark")
 
@@ -295,7 +295,7 @@ class Login:
             # Deferred so the button's click animation finishes first.
             self.window.after(150, self.window.quit)
 
-    def get_vault_key(self):
+    def get_vault_key(self) -> bytearray | None:
         return self.vault_key
 
     def run(self):

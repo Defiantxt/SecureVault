@@ -43,10 +43,21 @@ class Entries:
                                        )
 
     def place_frames(self):
-        self.main_frm.grid(row=1, column=1, sticky="new")
+        # Let the content area follow the window instead of relying on fixed
+        # scale()/scale_v() dimensions for whole layout panes.
+        self.window.grid_rowconfigure(1, weight=1)
+        self.window.grid_columnconfigure(1, weight=1)
+        self.main_frm.grid(row=1, column=1, sticky="nsew")
         self.main_frm.grid_columnconfigure(4, weight=1)  # push weight past display_entry_data_frm instead
         self.main_frm.grid_rowconfigure(1, weight=1)
-        self.entries_frm.grid(row=1, column=0, columnspan=3, sticky="new", padx=(padx(0.02), padx(0.02)))
+        self.entries_frm.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            padx=(padx(0.02), padx(0.02)),
+            pady=(0, pady(0.02))
+        )
 
     def place_labels(self):
         self.option_selected.grid(row=0, column=0, padx=padx(0.045))
