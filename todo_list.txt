@@ -1,2 +1,0 @@
-- add vault migration in settings that gets the pepper from keyring library then gets the rest
-  from the sqlite database
