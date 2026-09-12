@@ -8,9 +8,10 @@ controller layer.
 from __future__ import annotations
 
 import math
+import re
 import sys
 import tkinter as tk
-from typing import Callable
+from typing import Protocol
 
 import customtkinter as ctk
 
@@ -23,15 +24,26 @@ from dialog_geometry import (
 )
 
 
-SubmitCallback = Callable[[str, str, str], str | None]
+class SubmitCallback(Protocol):
+    def __call__(
+        self,
+        name: str,
+        content: str,
+        entry_type: str,
+        *,
+        service: str = "",
+        pin: str = "",
+        expiry: str = "",
+    ) -> str | None: ...
 
 
 class AddEntryDialog:
     """A reusable, modal editor for creating Login, Card, and Note entries.
 
-    ``on_submit`` is called as ``on_submit(name, content, entry_type)``.  It
-    should return ``None`` when the entry was stored successfully; returning a
-    string leaves the dialog open and displays that string as an error.
+    ``on_submit`` is called as ``on_submit(name, content, entry_type,
+    service=..., pin=..., expiry=...)``.  It should return ``None`` when the
+    entry was stored successfully; returning a string leaves the dialog open
+    and displays that string as an error.
     """
 
     ENTRY_TYPES = ("Login", "Card", "Note")
@@ -67,17 +79,21 @@ class AddEntryDialog:
         self._body: ctk.CTkScrollableFrame | None = None
         self._form: ctk.CTkFrame | None = None
         self._type_var: ctk.StringVar | None = None
+        self._name_label: ctk.CTkLabel | None = None
         self._name_entry: ctk.CTkEntry | None = None
         self._subtitle_label: ctk.CTkLabel | None = None
         self._content_label: ctk.CTkLabel | None = None
         self._content_frame: ctk.CTkFrame | None = None
+        self._service_entry: ctk.CTkEntry | None = None
         self._secret_entry: ctk.CTkEntry | None = None
+        self._pin_entry: ctk.CTkEntry | None = None
+        self._expiry_entry: ctk.CTkEntry | None = None
         self._note_textbox: ctk.CTkTextbox | None = None
         self._show_secret_button: ctk.CTkButton | None = None
         self._error_label: ctk.CTkLabel | None = None
         self._submit_button: ctk.CTkButton | None = None
 
-        self._drafts = {"secret": "", "note": ""}
+        self._drafts = self._empty_drafts()
         self._active_type = "Login"
         self._secret_is_visible = False
         self._submitting = False
@@ -103,6 +119,8 @@ class AddEntryDialog:
         dialog = self.dialog
         self.dialog = None
         if dialog is None:
+            self._reset_state()
+            self._clear_widget_references()
             return
 
         try:
@@ -117,6 +135,9 @@ class AddEntryDialog:
             pass
 
         self._clear_widget_references()
+        # Type-switch drafts deliberately retain plaintext while the dialog is
+        # open.  Drop every retained value as soon as the modal is closed.
+        self._reset_state()
         try:
             if self.parent.winfo_exists():
                 self.parent.lift()
@@ -134,21 +155,38 @@ class AddEntryDialog:
             return False
 
     def _reset_state(self) -> None:
-        self._drafts = {"secret": "", "note": ""}
+        self._drafts = self._empty_drafts()
         self._active_type = "Login"
         self._secret_is_visible = False
         self._submitting = False
+
+    @staticmethod
+    def _empty_drafts() -> dict[str, str]:
+        """Return isolated plaintext drafts for each entry type."""
+
+        return {
+            "login_service": "",
+            "login_password": "",
+            "card_number": "",
+            "card_pin": "",
+            "card_expiry": "",
+            "note": "",
+        }
 
     def _clear_widget_references(self) -> None:
         self._shell = None
         self._body = None
         self._form = None
         self._type_var = None
+        self._name_label = None
         self._name_entry = None
         self._subtitle_label = None
         self._content_label = None
         self._content_frame = None
+        self._service_entry = None
         self._secret_entry = None
+        self._pin_entry = None
+        self._expiry_entry = None
         self._note_textbox = None
         self._show_secret_button = None
         self._error_label = None
@@ -322,13 +360,15 @@ class AddEntryDialog:
                 font=("Arial", 12, "bold"),
             ).grid(row=0, column=column, padx=10, pady=14)
 
-        ctk.CTkLabel(
+        name_label = ctk.CTkLabel(
             master=form,
             text="ENTRY NAME",
             font=("Arial", 11, "bold"),
             text_color=self.MUTED,
             anchor="w",
-        ).grid(row=2, column=0, sticky="ew")
+        )
+        name_label.grid(row=2, column=0, sticky="ew")
+        self._name_label = name_label
 
         name_entry = ctk.CTkEntry(
             master=form,
@@ -336,7 +376,7 @@ class AddEntryDialog:
             fg_color=self.INPUT,
             border_color=self.BORDER,
             text_color=self.TEXT,
-            placeholder_text="e.g. Personal email",
+            placeholder_text="e.g. Work account",
             font=("Arial", 13),
         )
         name_entry.grid(row=3, column=0, sticky="ew", pady=(8, 18))
@@ -425,9 +465,23 @@ class AddEntryDialog:
 
     def _capture_content_draft(self) -> None:
         try:
-            if self._secret_entry is not None:
-                self._drafts["secret"] = self._secret_entry.get()
-            if self._note_textbox is not None:
+            if self._active_type == "Login":
+                if self._service_entry is not None:
+                    self._drafts["login_service"] = (
+                        self._service_entry.get()
+                    )
+                if self._secret_entry is not None:
+                    self._drafts["login_password"] = (
+                        self._secret_entry.get()
+                    )
+            elif self._active_type == "Card":
+                if self._secret_entry is not None:
+                    self._drafts["card_number"] = self._secret_entry.get()
+                if self._pin_entry is not None:
+                    self._drafts["card_pin"] = self._pin_entry.get()
+                if self._expiry_entry is not None:
+                    self._drafts["card_expiry"] = self._expiry_entry.get()
+            elif self._note_textbox is not None:
                 self._drafts["note"] = self._note_textbox.get("1.0", "end-1c")
         except tk.TclError:
             pass
@@ -441,14 +495,51 @@ class AddEntryDialog:
         self._set_error("")
         self._render_content_editor(resize=True)
 
+    def _configure_type_copy(self) -> None:
+        """Keep field labels and examples relevant to the selected type."""
+
+        if self._name_label is None or self._name_entry is None:
+            return
+
+        copy = {
+            "Login": (
+                "ENTRY NAME",
+                "e.g. Work account",
+                "Save account credentials and an optional service.",
+            ),
+            "Card": (
+                "CARD NAME",
+                "e.g. Travel card",
+                "Keep your card number, PIN, and expiry date encrypted.",
+            ),
+            "Note": (
+                "TITLE",
+                "e.g. Recovery instructions",
+                "Keep private notes encrypted and easy to identify.",
+            ),
+        }
+        label, placeholder, subtitle = copy.get(
+            self._active_type,
+            copy["Login"],
+        )
+        self._name_label.configure(text=label)
+        self._name_entry.configure(placeholder_text=placeholder)
+        if self._subtitle_label is not None:
+            self._subtitle_label.configure(text=subtitle)
+
     def _render_content_editor(self, *, resize: bool) -> None:
         if self._content_frame is None or self._content_label is None:
             return
 
+        self._configure_type_copy()
+
         for child in self._content_frame.winfo_children():
             child.destroy()
 
+        self._service_entry = None
         self._secret_entry = None
+        self._pin_entry = None
+        self._expiry_entry = None
         self._note_textbox = None
         self._show_secret_button = None
         is_note = self._active_type == "Note"
@@ -473,27 +564,99 @@ class AddEntryDialog:
             note_textbox.bind("<Control-Return>", self._submit_shortcut)
             note_textbox.bind("<Control-KP_Enter>", self._submit_shortcut)
             self._note_textbox = note_textbox
-        else:
-            label = "PASSWORD" if self._active_type == "Login" else "CARD DETAILS"
-            placeholder = (
-                "Enter a secure password"
-                if self._active_type == "Login"
-                else "Enter encrypted card details"
-            )
-            self._content_label.configure(text=label)
+        elif self._active_type == "Login":
+            self._content_label.configure(text="SERVICE (OPTIONAL)")
             self._content_frame.grid_columnconfigure(0, weight=1)
+
+            service_entry = ctk.CTkEntry(
+                master=self._content_frame,
+                height=44,
+                fg_color=self.INPUT,
+                border_color=self.BORDER,
+                text_color=self.TEXT,
+                placeholder_text="e.g. Gmail",
+                font=("Arial", 13),
+            )
+            service_entry.insert(0, self._drafts["login_service"])
+            service_entry.grid(
+                row=0,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+            )
+            service_entry.bind("<Return>", self._submit_shortcut)
+            self._service_entry = service_entry
+
+            ctk.CTkLabel(
+                master=self._content_frame,
+                text="PASSWORD",
+                font=("Arial", 11, "bold"),
+                text_color=self.MUTED,
+                anchor="w",
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(16, 8),
+            )
+
             secret_entry = ctk.CTkEntry(
                 master=self._content_frame,
                 height=44,
                 fg_color=self.INPUT,
                 border_color=self.BORDER,
                 text_color=self.TEXT,
-                placeholder_text=placeholder,
+                placeholder_text="Enter a secure password",
                 font=("Arial", 13),
                 show="" if self._secret_is_visible else "\u2022",
             )
-            secret_entry.insert(0, self._drafts["secret"])
-            secret_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+            secret_entry.insert(0, self._drafts["login_password"])
+            secret_entry.grid(
+                row=2,
+                column=0,
+                sticky="ew",
+                padx=(0, 8),
+            )
+            secret_entry.bind("<Return>", self._submit_shortcut)
+            self._secret_entry = secret_entry
+
+            show_button = ctk.CTkButton(
+                master=self._content_frame,
+                text="Hide" if self._secret_is_visible else "Show",
+                command=self._toggle_secret_visibility,
+                width=70,
+                height=44,
+                fg_color=self.SECONDARY,
+                hover_color=self.SECONDARY_HOVER,
+                border_width=1,
+                border_color="#34425F",
+                corner_radius=8,
+                font=("Arial", 11, "bold"),
+            )
+            show_button.grid(row=2, column=1)
+            self._show_secret_button = show_button
+        else:
+            self._content_label.configure(text="CARD NUMBER")
+            self._content_frame.grid_columnconfigure(0, weight=1)
+
+            secret_entry = ctk.CTkEntry(
+                master=self._content_frame,
+                height=44,
+                fg_color=self.INPUT,
+                border_color=self.BORDER,
+                text_color=self.TEXT,
+                placeholder_text="Enter the card number",
+                font=("Arial", 13),
+                show="" if self._secret_is_visible else "\u2022",
+            )
+            secret_entry.insert(0, self._drafts["card_number"])
+            secret_entry.grid(
+                row=0,
+                column=0,
+                sticky="ew",
+                padx=(0, 8),
+            )
             secret_entry.bind("<Return>", self._submit_shortcut)
             self._secret_entry = secret_entry
 
@@ -513,9 +676,83 @@ class AddEntryDialog:
             show_button.grid(row=0, column=1)
             self._show_secret_button = show_button
 
+            card_meta = ctk.CTkFrame(
+                master=self._content_frame,
+                fg_color="transparent",
+            )
+            card_meta.grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(16, 0),
+            )
+            card_meta.grid_columnconfigure(
+                (0, 1),
+                weight=1,
+                uniform="card_meta",
+            )
+
+            pin_field = ctk.CTkFrame(master=card_meta, fg_color="transparent")
+            pin_field.grid(row=0, column=1, sticky="ew", padx=(7, 0))
+            pin_field.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                master=pin_field,
+                text="PIN",
+                font=("Arial", 11, "bold"),
+                text_color=self.MUTED,
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+            pin_entry = ctk.CTkEntry(
+                master=pin_field,
+                height=44,
+                fg_color=self.INPUT,
+                border_color=self.BORDER,
+                text_color=self.TEXT,
+                placeholder_text="Enter PIN",
+                font=("Arial", 13),
+                show="\u2022",
+            )
+            pin_entry.insert(0, self._drafts["card_pin"])
+            pin_entry.grid(row=1, column=0, sticky="ew")
+            pin_entry.bind("<Return>", self._submit_shortcut)
+            self._pin_entry = pin_entry
+
+            expiry_field = ctk.CTkFrame(
+                master=card_meta,
+                fg_color="transparent",
+            )
+            expiry_field.grid(row=0, column=0, sticky="ew", padx=(0, 7))
+            expiry_field.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                master=expiry_field,
+                text="EXPIRY DATE",
+                font=("Arial", 11, "bold"),
+                text_color=self.MUTED,
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+            expiry_entry = ctk.CTkEntry(
+                master=expiry_field,
+                height=44,
+                fg_color=self.INPUT,
+                border_color=self.BORDER,
+                text_color=self.TEXT,
+                placeholder_text="MM/YY",
+                font=("Arial", 13),
+            )
+            expiry_entry.insert(0, self._drafts["card_expiry"])
+            expiry_entry.grid(row=1, column=0, sticky="ew")
+            expiry_entry.bind("<Return>", self._submit_shortcut)
+            self._expiry_entry = expiry_entry
+
         if resize and self._dialog_exists():
             self._fit_to_content()
-            target = self._note_textbox if is_note else self._secret_entry
+            if is_note:
+                target = self._note_textbox
+            elif self._active_type == "Login":
+                target = self._service_entry
+            else:
+                target = self._secret_entry
             if target is not None:
                 target.after_idle(target.focus_set)
 
@@ -523,9 +760,10 @@ class AddEntryDialog:
         if self._secret_entry is None:
             return
         self._secret_is_visible = not self._secret_is_visible
-        self._secret_entry.configure(
-            show="" if self._secret_is_visible else "\u2022"
-        )
+        show = "" if self._secret_is_visible else "\u2022"
+        self._secret_entry.configure(show=show)
+        if self._pin_entry is not None:
+            self._pin_entry.configure(show=show)
         if self._show_secret_button is not None:
             self._show_secret_button.configure(
                 text="Hide" if self._secret_is_visible else "Show"
@@ -542,19 +780,61 @@ class AddEntryDialog:
         self._capture_content_draft()
         entry_type = self._active_type
         name = self._name_entry.get().strip()
-        content_key = "note" if entry_type == "Note" else "secret"
-        content = self._drafts[content_key]
+        service = ""
+        pin = ""
+        expiry = ""
+        if entry_type == "Login":
+            content = self._drafts["login_password"]
+            service = self._drafts["login_service"].strip()
+        elif entry_type == "Card":
+            content = self._drafts["card_number"]
+            pin = self._drafts["card_pin"].strip()
+            expiry = self._drafts["card_expiry"].strip()
+        else:
+            content = self._drafts["note"]
 
         if not name:
-            self._set_error("Enter a name for this vault entry.")
+            message = (
+                "Enter a title for this note."
+                if entry_type == "Note"
+                else (
+                    "Enter a name for this card."
+                    if entry_type == "Card"
+                    else "Enter a name for this vault entry."
+                )
+            )
+            self._set_error(message)
             self._name_entry.focus_set()
             return
         if not content.strip():
-            noun = "note content" if entry_type == "Note" else "secret"
+            noun = {
+                "Login": "password",
+                "Card": "card number",
+                "Note": "note content",
+            }.get(entry_type, "content")
             self._set_error(f"Enter {noun} before adding the entry.")
             target = self._note_textbox if entry_type == "Note" else self._secret_entry
             if target is not None:
                 target.focus_set()
+            return
+        if entry_type == "Card" and not pin:
+            self._set_error("Enter the card PIN before adding the entry.")
+            if self._pin_entry is not None:
+                self._pin_entry.focus_set()
+            return
+        if entry_type == "Card" and not expiry:
+            self._set_error(
+                "Enter the card expiry date before adding the entry."
+            )
+            if self._expiry_entry is not None:
+                self._expiry_entry.focus_set()
+            return
+        if entry_type == "Card" and not re.fullmatch(
+            r"(?:0[1-9]|1[0-2])/\d{2}", expiry
+        ):
+            self._set_error("Enter the expiry date as MM/YY.")
+            if self._expiry_entry is not None:
+                self._expiry_entry.focus_set()
             return
 
         self._set_error("")
@@ -563,7 +843,14 @@ class AddEntryDialog:
             self._submit_button.configure(state="disabled", text="Adding...")
 
         try:
-            error = self.on_submit(name, content, entry_type)
+            error = self.on_submit(
+                name,
+                content,
+                entry_type,
+                service=service,
+                pin=pin,
+                expiry=expiry,
+            )
         except Exception as exc:  # Keep callback failures inside the modal.
             error = str(exc).strip() or "The entry could not be saved."
 

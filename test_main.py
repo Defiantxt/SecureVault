@@ -32,15 +32,18 @@ def run_preview() -> None:
     repository = Crypto(":memory:", pepper="securevault-preview-pepper")
     repository.store_entry(
         preview_key,
-        "Personal email",
+        "Personal inbox",
         "preview-password",
         "Login",
+        service="Gmail",
     )
     repository.store_entry(
         preview_key,
         "Travel card",
         "4111 1111 1111 1111",
         "Card",
+        pin="0427",
+        expiry="08/29",
     )
     repository.store_entry(
         preview_key,
@@ -48,8 +51,15 @@ def run_preview() -> None:
         "alpha\nbravo\ncharlie",
         "Note",
     )
+    repository.store_entry(
+        preview_key,
+        "Archived account",
+        "old-preview-password",
+        "Login",
+        service="Example service",
+    )
     repository.set_favorite(1, True)
-    repository.move_to_trash(2)
+    repository.move_to_trash(4)
 
     sidebar = Sidebar(window, width, height)
     entries = Entries(window, width, height, preview_key)

@@ -133,6 +133,12 @@ class Crypto:
             password_nonce BLOB NOT NULL,
             type_entry BLOB NOT NULL,
             type_nonce BLOB NOT NULL,
+            encrypted_service BLOB DEFAULT NULL,
+            service_nonce BLOB DEFAULT NULL,
+            encrypted_pin BLOB DEFAULT NULL,
+            pin_nonce BLOB DEFAULT NULL,
+            encrypted_expiry BLOB DEFAULT NULL,
+            expiry_nonce BLOB DEFAULT NULL,
             favorite INTEGER NOT NULL DEFAULT 0,
             deleted_at INTEGER DEFAULT NULL
         )
@@ -150,6 +156,20 @@ class Crypto:
                 "ALTER TABLE passwords "
                 "ADD COLUMN deleted_at INTEGER DEFAULT NULL"
             )
+        optional_entry_columns = (
+            "encrypted_service",
+            "service_nonce",
+            "encrypted_pin",
+            "pin_nonce",
+            "encrypted_expiry",
+            "expiry_nonce",
+        )
+        for column_name in optional_entry_columns:
+            if column_name not in password_columns:
+                self.cursor.execute(
+                    f"ALTER TABLE passwords ADD COLUMN {column_name} "
+                    "BLOB DEFAULT NULL"
+                )
 
         self.cursor.execute(
             """
@@ -209,7 +229,45 @@ class Crypto:
             vault_key = self.verify_master_password_hash(master)
         return vault_key
 
-    def store_entry(self, vault_key: bytearray, entry_name: str, entry_password: str, type_entry: str) -> None:
+    @staticmethod
+    def _encrypt_optional_entry_field(
+        aesgcm: AESGCM,
+        value: str,
+    ) -> tuple[bytes | None, bytes | None]:
+        """Encrypt optional entry metadata, leaving absent values as NULL."""
+
+        if value == "":
+            return None, None
+        nonce = os.urandom(12)
+        return aesgcm.encrypt(nonce, value.encode(), None), nonce
+
+    @staticmethod
+    def _decrypt_optional_entry_field(
+        aesgcm: AESGCM,
+        ciphertext: bytes | None,
+        nonce: bytes | None,
+    ) -> str:
+        """Decrypt optional metadata and normalize legacy NULLs to empty text."""
+
+        if ciphertext is None and nonce is None:
+            return ""
+        if ciphertext is None or nonce is None:
+            raise ValueError("Optional entry ciphertext and nonce must coexist")
+        return aesgcm.decrypt(bytes(nonce), bytes(ciphertext), None).decode(
+            "utf-8"
+        )
+
+    def store_entry(
+        self,
+        vault_key: bytearray,
+        entry_name: str,
+        entry_password: str,
+        type_entry: str,
+        *,
+        service: str = "",
+        pin: str = "",
+        expiry: str = "",
+    ) -> None:
         aesgcm = AESGCM(vault_key)
 
         name_nonce = os.urandom(12)
@@ -219,14 +277,30 @@ class Crypto:
         name_ciphertext = aesgcm.encrypt(name_nonce, entry_name.encode(), None)
         password_ciphertext = aesgcm.encrypt(password_nonce, entry_password.encode(), None)
         type_ciphertext = aesgcm.encrypt(type_nonce, type_entry.encode(), None)
+        service_ciphertext, service_nonce = (
+            self._encrypt_optional_entry_field(aesgcm, service)
+        )
+        pin_ciphertext, pin_nonce = self._encrypt_optional_entry_field(
+            aesgcm, pin
+        )
+        expiry_ciphertext, expiry_nonce = (
+            self._encrypt_optional_entry_field(aesgcm, expiry)
+        )
 
         self.cursor.execute("""
-            INSERT INTO passwords (name, name_nonce, encrypted_password, password_nonce, type_entry, type_nonce)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO passwords (
+                name, name_nonce, encrypted_password, password_nonce,
+                type_entry, type_nonce, encrypted_service, service_nonce,
+                encrypted_pin, pin_nonce, encrypted_expiry, expiry_nonce
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 name_ciphertext, name_nonce,
                 password_ciphertext, password_nonce,
-                type_ciphertext, type_nonce
+                type_ciphertext, type_nonce,
+                service_ciphertext, service_nonce,
+                pin_ciphertext, pin_nonce,
+                expiry_ciphertext, expiry_nonce,
             ))
 
         self.db.commit()
@@ -238,6 +312,10 @@ class Crypto:
         entry_name: str,
         entry_password: str,
         type_entry: str,
+        *,
+        service: str = "",
+        pin: str = "",
+        expiry: str = "",
     ) -> bool:
         """Replace an entry's encrypted fields while preserving its identity."""
         aesgcm = AESGCM(vault_key)
@@ -251,13 +329,25 @@ class Crypto:
             password_nonce, entry_password.encode(), None
         )
         type_ciphertext = aesgcm.encrypt(type_nonce, type_entry.encode(), None)
+        service_ciphertext, service_nonce = (
+            self._encrypt_optional_entry_field(aesgcm, service)
+        )
+        pin_ciphertext, pin_nonce = self._encrypt_optional_entry_field(
+            aesgcm, pin
+        )
+        expiry_ciphertext, expiry_nonce = (
+            self._encrypt_optional_entry_field(aesgcm, expiry)
+        )
 
         self.cursor.execute(
             """
             UPDATE passwords
             SET name = ?, name_nonce = ?,
                 encrypted_password = ?, password_nonce = ?,
-                type_entry = ?, type_nonce = ?
+                type_entry = ?, type_nonce = ?,
+                encrypted_service = ?, service_nonce = ?,
+                encrypted_pin = ?, pin_nonce = ?,
+                encrypted_expiry = ?, expiry_nonce = ?
             WHERE id = ? AND deleted_at IS NULL
             """,
             (
@@ -267,6 +357,12 @@ class Crypto:
                 password_nonce,
                 type_ciphertext,
                 type_nonce,
+                service_ciphertext,
+                service_nonce,
+                pin_ciphertext,
+                pin_nonce,
+                expiry_ciphertext,
+                expiry_nonce,
                 entry_id,
             ),
         )
@@ -514,7 +610,9 @@ class Crypto:
         self.cursor.execute(
             """
             SELECT id, name, name_nonce, encrypted_password, password_nonce,
-                   type_entry, type_nonce, favorite, deleted_at
+                   type_entry, type_nonce, favorite, deleted_at,
+                   encrypted_service, service_nonce, encrypted_pin, pin_nonce,
+                   encrypted_expiry, expiry_nonce
             FROM passwords
             """
         )
@@ -529,6 +627,12 @@ class Crypto:
             type_nonce,
             favorite,
             deleted_at,
+            encrypted_service,
+            service_nonce,
+            encrypted_pin,
+            pin_nonce,
+            encrypted_expiry,
+            expiry_nonce,
         ) in self.cursor.fetchall():
             decrypted_name = aesgcm.decrypt(
                 bytes(name_nonce), bytes(name), None
@@ -548,6 +652,15 @@ class Crypto:
                 "name": decrypted_name,
                 "password": decrypted_password,
                 "type": decrypted_type,
+                "service": self._decrypt_optional_entry_field(
+                    aesgcm, encrypted_service, service_nonce
+                ),
+                "pin": self._decrypt_optional_entry_field(
+                    aesgcm, encrypted_pin, pin_nonce
+                ),
+                "expiry": self._decrypt_optional_entry_field(
+                    aesgcm, encrypted_expiry, expiry_nonce
+                ),
                 "favorite": bool(favorite),
                 "deleted_at": deleted_at,
             }

@@ -1,5 +1,6 @@
-import tkinter as tk
+import re
 import time
+import tkinter as tk
 
 import customtkinter as ctk
 
@@ -16,6 +17,20 @@ from utils import padx, pady, scale, scale_v
 
 
 class EntryLogic:
+    @staticmethod
+    def _empty_edit_drafts() -> dict[str, str]:
+        """Return isolated drafts for every supported entry-type field."""
+
+        return {
+            "login_password": "",
+            "login_service": "",
+            "card_number": "",
+            "card_pin": "",
+            "card_expiry": "",
+            "note": "",
+            "other_secret": "",
+        }
+
     def __init__(self, window, entries, vault_key, crypto=None) -> None:
         self.vault_key = vault_key
         self.crypto = crypto if crypto is not None else Crypto()
@@ -38,9 +53,14 @@ class EntryLogic:
         self.entry_favorite_btns: dict[int, ctk.CTkButton] = {}
         self.selected_entry_id: int | None = None
         self.selected_entry_name: str | None = None
+        self.selected_entry_type = ""
         self.selected_password = ""
+        self.selected_service = ""
+        self.selected_pin = ""
+        self.selected_expiry = ""
         self.password_is_visible = False
         self.password_value_lbl = None
+        self.pin_value_lbl = None
         self.password_toggle_btn = None
         self.copy_password_btn = None
         self.copy_button_default_text = "Copy password"
@@ -50,12 +70,17 @@ class EntryLogic:
         self.favorite_btn = None
         self.edit_dialog = None
         self.edit_entry_id = None
+        self.edit_name_lbl = None
         self.edit_name_entry = None
         self.edit_password_entry = None
+        self.edit_service_entry = None
+        self.edit_pin_entry = None
+        self.edit_expiry_entry = None
         self.edit_note_textbox = None
         self.edit_content_lbl = None
         self.edit_content_frm = None
-        self.edit_content_drafts = {"password": "", "note": ""}
+        self.edit_content_drafts = self._empty_edit_drafts()
+        self.edit_active_type = "Login"
         self.edit_type_var = None
         self.edit_error_lbl = None
         self.delete_dialog = None
@@ -168,6 +193,9 @@ class EntryLogic:
                 "password": str(record["password"]),
                 "type": str(record["type"]),
                 "favorite": bool(record["favorite"]),
+                "service": str(record.get("service", "")),
+                "pin": str(record.get("pin", "")),
+                "expiry": str(record.get("expiry", "")),
             }
             for record in self.entry_records.values()
             if record.get("deleted_at") is None
@@ -287,14 +315,23 @@ class EntryLogic:
         self.password_hide_after_id = None
 
     def _mask_password(self) -> None:
-        """Mask the current password and reset its reveal control."""
+        """Mask the current secret values and reset their reveal control."""
 
         self.password_hide_after_id = None
         self.password_is_visible = False
 
         try:
             if self.password_value_lbl is not None:
-                self.password_value_lbl.configure(text="\u2022" * 12)
+                masked_value = (
+                    self._masked_card_number(self.selected_password)
+                    if self.selected_entry_type == "Card"
+                    else "\u2022" * 12
+                )
+                self.password_value_lbl.configure(text=masked_value)
+            if self.pin_value_lbl is not None:
+                self.pin_value_lbl.configure(
+                    text="\u2022" * 4 if self.selected_pin else "Not added"
+                )
             if self.password_toggle_btn is not None:
                 self.password_toggle_btn.configure(text="Show")
         except tk.TclError:
@@ -314,11 +351,29 @@ class EntryLogic:
 
         self.password_is_visible = True
         self.password_value_lbl.configure(text=self.selected_password)
+        if self.pin_value_lbl is not None:
+            self.pin_value_lbl.configure(
+                text=self.selected_pin or "Not added"
+            )
         self.password_toggle_btn.configure(text="Hide")
         self.password_hide_after_id = self.window.after(
             self.password_reveal_seconds * 1000,
             self._mask_password
         )
+
+    @staticmethod
+    def _masked_card_number(card_number: str) -> str:
+        """Keep a card recognizable without exposing more than its last four."""
+
+        compact = "".join(character for character in card_number if character.isalnum())
+        if not compact:
+            return "\u2022" * 12
+        tail = compact[-4:]
+        hidden_count = max(4, len(compact) - len(tail))
+        hidden = "\u2022" * hidden_count
+        groups = [hidden[index:index + 4] for index in range(0, len(hidden), 4)]
+        groups.append(tail)
+        return " ".join(groups)
 
     @staticmethod
     def _reset_copy_button(button, default_text: str) -> None:
@@ -389,9 +444,8 @@ class EntryLogic:
             )
 
     def _render_entry_value(self, content_frm, entry_type: str) -> None:
-        """Render a masked secret or a readable multiline note."""
+        """Render type-specific fields without exposing protected values."""
 
-        is_note = entry_type == "Note"
         value_section = ctk.CTkFrame(
             master=content_frm,
             fg_color="transparent"
@@ -399,20 +453,20 @@ class EntryLogic:
         value_section.grid(row=2, column=0, sticky="ew")
         value_section.grid_columnconfigure(0, weight=1)
 
-        value_lbl = ctk.CTkLabel(
-            master=value_section,
-            text="NOTE" if is_note else "PASSWORD",
-            font=("Arial", scale(0.009), "bold"),
-            text_color=self.MUTED_TEXT,
-            anchor="w"
-        )
-        value_lbl.grid(row=0, column=0, sticky="w")
-
         self.password_value_lbl = None
+        self.pin_value_lbl = None
         self.password_toggle_btn = None
         self.note_value_textbox = None
 
-        if is_note:
+        if entry_type == "Note":
+            ctk.CTkLabel(
+                master=value_section,
+                text="NOTE",
+                font=("Arial", scale(0.009), "bold"),
+                text_color=self.MUTED_TEXT,
+                anchor="w"
+            ).grid(row=0, column=0, sticky="w")
+
             note_box = ctk.CTkTextbox(
                 master=value_section,
                 height=scale_v(0.2),
@@ -436,7 +490,209 @@ class EntryLogic:
             note_box.configure(state="disabled")
             self.note_value_textbox = note_box
             self.copy_button_default_text = "Copy note"
+
+        elif entry_type == "Card":
+            ctk.CTkLabel(
+                master=value_section,
+                text="CARD DETAILS",
+                font=("Arial", scale(0.009), "bold"),
+                text_color=self.MUTED_TEXT,
+                anchor="w"
+            ).grid(row=0, column=0, sticky="w")
+
+            card_box = ctk.CTkFrame(
+                master=value_section,
+                fg_color="#151A38",
+                border_width=1,
+                border_color="#4D477E",
+                corner_radius=scale(0.012)
+            )
+            card_box.grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(pady(0.01), 0)
+            )
+            card_box.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                master=card_box,
+                text="CARD NUMBER",
+                font=("Arial", scale(0.008), "bold"),
+                text_color="#AAA6CA",
+                anchor="w"
+            ).grid(
+                row=0,
+                column=0,
+                sticky="ew",
+                padx=padx(0.014),
+                pady=(pady(0.014), 0)
+            )
+
+            number_row = ctk.CTkFrame(master=card_box, fg_color="transparent")
+            number_row.grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                padx=padx(0.014),
+                pady=(pady(0.004), pady(0.014))
+            )
+            number_row.grid_columnconfigure(0, weight=1)
+
+            self.password_value_lbl = ctk.CTkLabel(
+                master=number_row,
+                text=self._masked_card_number(self.selected_password),
+                font=("Consolas", scale(0.012), "bold"),
+                text_color="#F4F2FF",
+                anchor="w",
+                justify="left",
+                wraplength=scale(0.13)
+            )
+            self.password_value_lbl.grid(row=0, column=0, sticky="ew")
+
+            self.password_toggle_btn = ctk.CTkButton(
+                master=number_row,
+                text="Show",
+                command=self._toggle_password_visibility,
+                width=scale(0.045),
+                height=scale_v(0.04),
+                fg_color="#29254F",
+                hover_color="#373166",
+                border_width=1,
+                border_color="#575084",
+                corner_radius=scale(0.006),
+                font=("Arial", scale(0.0085), "bold"),
+                text_color="#E1DEFF"
+            )
+            self.password_toggle_btn.grid(
+                row=0,
+                column=1,
+                padx=(padx(0.006), 0)
+            )
+
+            metadata_row = ctk.CTkFrame(
+                master=card_box,
+                fg_color="#10152F",
+                corner_radius=scale(0.008)
+            )
+            metadata_row.grid(
+                row=2,
+                column=0,
+                sticky="ew",
+                padx=padx(0.014),
+                pady=(0, pady(0.014))
+            )
+            metadata_row.grid_columnconfigure((0, 1), weight=1, uniform="card_meta")
+
+            ctk.CTkLabel(
+                master=metadata_row,
+                text="EXPIRY DATE",
+                font=("Arial", scale(0.0075), "bold"),
+                text_color="#8985AA",
+                anchor="w"
+            ).grid(
+                row=0,
+                column=0,
+                sticky="ew",
+                padx=(padx(0.011), padx(0.005)),
+                pady=(pady(0.009), 0)
+            )
+            ctk.CTkLabel(
+                master=metadata_row,
+                text="PIN",
+                font=("Arial", scale(0.0075), "bold"),
+                text_color="#8985AA",
+                anchor="w"
+            ).grid(
+                row=0,
+                column=1,
+                sticky="ew",
+                padx=(padx(0.005), padx(0.011)),
+                pady=(pady(0.009), 0)
+            )
+            ctk.CTkLabel(
+                master=metadata_row,
+                text=self.selected_expiry or "Not added",
+                font=("Consolas", scale(0.011)),
+                text_color="#F0EEFF",
+                anchor="w"
+            ).grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                padx=(padx(0.011), padx(0.005)),
+                pady=(pady(0.002), pady(0.009))
+            )
+            self.pin_value_lbl = ctk.CTkLabel(
+                master=metadata_row,
+                text=(
+                    "\u2022" * 4 if self.selected_pin else "Not added"
+                ),
+                font=("Consolas", scale(0.011)),
+                text_color="#F0EEFF",
+                anchor="w"
+            )
+            self.pin_value_lbl.grid(
+                row=1,
+                column=1,
+                sticky="ew",
+                padx=(padx(0.005), padx(0.011)),
+                pady=(pady(0.002), pady(0.009))
+            )
+            self.copy_button_default_text = "Copy card number"
+
         else:
+            next_row = 0
+            if self.selected_service:
+                ctk.CTkLabel(
+                    master=value_section,
+                    text="SERVICE",
+                    font=("Arial", scale(0.009), "bold"),
+                    text_color=self.MUTED_TEXT,
+                    anchor="w"
+                ).grid(row=next_row, column=0, sticky="w")
+                next_row += 1
+
+                service_box = ctk.CTkFrame(
+                    master=value_section,
+                    fg_color="#101A2C",
+                    border_width=1,
+                    border_color=self.CARD_BORDER_COLOR,
+                    corner_radius=scale(0.008)
+                )
+                service_box.grid(
+                    row=next_row,
+                    column=0,
+                    sticky="ew",
+                    pady=(pady(0.01), pady(0.018))
+                )
+                service_box.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(
+                    master=service_box,
+                    text=self.selected_service,
+                    font=("Arial", scale(0.011)),
+                    text_color="#F2F4FA",
+                    anchor="w",
+                    justify="left",
+                    wraplength=scale(0.17)
+                ).grid(
+                    row=0,
+                    column=0,
+                    sticky="ew",
+                    padx=padx(0.012),
+                    pady=pady(0.014)
+                )
+                next_row += 1
+
+            ctk.CTkLabel(
+                master=value_section,
+                text="PASSWORD",
+                font=("Arial", scale(0.009), "bold"),
+                text_color=self.MUTED_TEXT,
+                anchor="w"
+            ).grid(row=next_row, column=0, sticky="w")
+            next_row += 1
+
             password_box = ctk.CTkFrame(
                 master=value_section,
                 fg_color="#101A2C",
@@ -445,7 +701,7 @@ class EntryLogic:
                 corner_radius=scale(0.008)
             )
             password_box.grid(
-                row=1,
+                row=next_row,
                 column=0,
                 sticky="ew",
                 pady=(pady(0.01), 0)
@@ -524,7 +780,11 @@ class EntryLogic:
         self._cancel_password_hide_timer()
         self._select_entry_card(entry_id)
         self.selected_entry_name = entry_text
+        self.selected_entry_type = entry_type
         self.selected_password = password
+        self.selected_service = str(record.get("service", ""))
+        self.selected_pin = str(record.get("pin", ""))
+        self.selected_expiry = str(record.get("expiry", ""))
         self.password_is_visible = False
 
         for child in self.display_entry_data_frm.winfo_children():
@@ -737,6 +997,12 @@ class EntryLogic:
                 f"clear from the clipboard after {self.clipboard_clear_seconds} "
                 "seconds."
             )
+        elif entry_type == "Card":
+            hint_text = (
+                "Revealed card details hide after "
+                f"{self.password_reveal_seconds} seconds. Copied card numbers "
+                f"clear after {self.clipboard_clear_seconds} seconds."
+            )
         else:
             hint_text = (
                 "Revealed passwords hide after "
@@ -931,6 +1197,12 @@ class EntryLogic:
                 self.edit_name_entry.delete(0, "end")
             if self.edit_password_entry is not None:
                 self.edit_password_entry.delete(0, "end")
+            if self.edit_service_entry is not None:
+                self.edit_service_entry.delete(0, "end")
+            if self.edit_pin_entry is not None:
+                self.edit_pin_entry.delete(0, "end")
+            if self.edit_expiry_entry is not None:
+                self.edit_expiry_entry.delete(0, "end")
             if self.edit_note_textbox is not None:
                 self.edit_note_textbox.delete("1.0", "end")
         except tk.TclError:
@@ -939,12 +1211,17 @@ class EntryLogic:
         dialog = self.edit_dialog
         self.edit_dialog = None
         self.edit_entry_id = None
+        self.edit_name_lbl = None
         self.edit_name_entry = None
         self.edit_password_entry = None
+        self.edit_service_entry = None
+        self.edit_pin_entry = None
+        self.edit_expiry_entry = None
         self.edit_note_textbox = None
         self.edit_content_lbl = None
         self.edit_content_frm = None
-        self.edit_content_drafts = {"password": "", "note": ""}
+        self.edit_content_drafts = self._empty_edit_drafts()
+        self.edit_active_type = "Login"
         self.edit_type_var = None
         self.edit_error_lbl = None
         self._close_dialog(dialog)
@@ -962,35 +1239,75 @@ class EntryLogic:
         """Retain independent drafts when changing an entry's type."""
 
         try:
-            if self.edit_password_entry is not None:
-                self.edit_content_drafts["password"] = (
-                    self.edit_password_entry.get()
-                )
-            if self.edit_note_textbox is not None:
+            if self.edit_active_type == "Note" and self.edit_note_textbox is not None:
                 self.edit_content_drafts["note"] = (
                     self.edit_note_textbox.get("1.0", "end-1c")
+                )
+            elif self.edit_active_type == "Login":
+                if self.edit_password_entry is not None:
+                    self.edit_content_drafts["login_password"] = (
+                        self.edit_password_entry.get()
+                    )
+                if self.edit_service_entry is not None:
+                    self.edit_content_drafts["login_service"] = (
+                        self.edit_service_entry.get()
+                    )
+            elif self.edit_active_type == "Card":
+                if self.edit_password_entry is not None:
+                    self.edit_content_drafts["card_number"] = (
+                        self.edit_password_entry.get()
+                    )
+                if self.edit_pin_entry is not None:
+                    self.edit_content_drafts["card_pin"] = self.edit_pin_entry.get()
+                if self.edit_expiry_entry is not None:
+                    self.edit_content_drafts["card_expiry"] = (
+                        self.edit_expiry_entry.get()
+                    )
+            elif self.edit_password_entry is not None:
+                self.edit_content_drafts["other_secret"] = (
+                    self.edit_password_entry.get()
                 )
         except tk.TclError:
             pass
 
     def _render_edit_content_input(self, entry_type: str) -> None:
-        """Swap the edit form between a secret field and note editor."""
+        """Swap the editor between complete Login, Card, and Note forms."""
 
         if self.edit_content_frm is None or self.edit_content_lbl is None:
             return
 
         self._cache_edit_content()
+        if self.edit_error_lbl is not None:
+            self.edit_error_lbl.configure(text="")
         for child in self.edit_content_frm.winfo_children():
             child.destroy()
 
         self.edit_password_entry = None
+        self.edit_service_entry = None
+        self.edit_pin_entry = None
+        self.edit_expiry_entry = None
         self.edit_note_textbox = None
-        is_note = entry_type == "Note"
-        self.edit_content_lbl.configure(
-            text="NOTE CONTENT" if is_note else "PASSWORD"
-        )
+        self.edit_active_type = entry_type
 
-        if is_note:
+        if self.edit_name_lbl is not None:
+            self.edit_name_lbl.configure(
+                text={
+                    "Card": "CARD NAME",
+                    "Note": "TITLE",
+                }.get(entry_type, "ENTRY NAME")
+            )
+        if self.edit_name_entry is not None:
+            placeholders = {
+                "Login": "e.g. Work account",
+                "Card": "e.g. Everyday Visa",
+                "Note": "e.g. Recovery instructions",
+            }
+            self.edit_name_entry.configure(
+                placeholder_text=placeholders.get(entry_type, "Enter a name")
+            )
+
+        if entry_type == "Note":
+            self.edit_content_lbl.configure(text="NOTE CONTENT")
             self.edit_note_textbox = ctk.CTkTextbox(
                 master=self.edit_content_frm,
                 height=scale_v(0.16),
@@ -1023,48 +1340,112 @@ class EntryLogic:
             )
             return
 
-        self.edit_content_frm.grid_columnconfigure(0, weight=1)
-        self.edit_password_entry = ctk.CTkEntry(
+        self.edit_content_frm.grid_columnconfigure((0, 1), weight=1)
+        label_style = {
+            "font": ("Arial", scale(0.008), "bold"),
+            "text_color": self.MUTED_TEXT,
+            "anchor": "w",
+        }
+        entry_style = {
+            "height": scale_v(0.055),
+            "fg_color": "#101A2C",
+            "border_color": self.CARD_BORDER_COLOR,
+            "text_color": "#FFFFFF",
+        }
+
+        if entry_type == "Login":
+            self.edit_content_lbl.configure(text="LOGIN DETAILS")
+            ctk.CTkLabel(
+                master=self.edit_content_frm,
+                text="SERVICE (OPTIONAL)",
+                **label_style,
+            ).grid(row=0, column=0, columnspan=2, sticky="ew")
+            self.edit_service_entry = ctk.CTkEntry(
+                master=self.edit_content_frm,
+                placeholder_text="e.g. Gmail",
+                **entry_style,
+            )
+            self.edit_service_entry.insert(
+                0, self.edit_content_drafts["login_service"]
+            )
+            self.edit_service_entry.grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(pady(0.006), pady(0.014)),
+            )
+            ctk.CTkLabel(
+                master=self.edit_content_frm,
+                text="PASSWORD",
+                **label_style,
+            ).grid(row=2, column=0, columnspan=2, sticky="ew")
+            secret_value = self.edit_content_drafts["login_password"]
+            secret_row = 3
+        elif entry_type == "Card":
+            self.edit_content_lbl.configure(text="CREDIT CARD DETAILS")
+            ctk.CTkLabel(
+                master=self.edit_content_frm,
+                text="CARD NUMBER",
+                **label_style,
+            ).grid(row=0, column=0, columnspan=2, sticky="ew")
+            secret_value = self.edit_content_drafts["card_number"]
+            secret_row = 1
+        else:
+            self.edit_content_lbl.configure(text="SECRET")
+            secret_value = self.edit_content_drafts["other_secret"]
+            secret_row = 0
+
+        secret_input_row = ctk.CTkFrame(
             master=self.edit_content_frm,
-            height=scale_v(0.055),
-            fg_color="#101A2C",
-            border_color=self.CARD_BORDER_COLOR,
-            text_color="#FFFFFF",
-            show="\u2022"
+            fg_color="transparent",
         )
-        self.edit_password_entry.insert(
-            0,
-            self.edit_content_drafts["password"]
+        secret_input_row.grid(
+            row=secret_row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(pady(0.006), 0),
         )
+        secret_input_row.grid_columnconfigure(0, weight=1)
+
+        self.edit_password_entry = ctk.CTkEntry(
+            master=secret_input_row,
+            show="\u2022",
+            placeholder_text=(
+                "Enter the card number"
+                if entry_type == "Card"
+                else "Enter a secure password"
+            ),
+            **entry_style,
+        )
+        self.edit_password_entry.insert(0, secret_value)
         self.edit_password_entry.grid(
             row=0,
             column=0,
             sticky="ew",
-            padx=(0, padx(0.008))
+            padx=(0, padx(0.008)),
         )
         self.edit_password_entry.bind(
-            "<Return>",
-            lambda _event: self._save_edit_shortcut()
+            "<Return>", lambda _event: self._save_edit_shortcut()
         )
 
-        password_visible = False
+        secret_visible = False
 
-        def toggle_edit_password() -> None:
-            nonlocal password_visible
-            password_visible = not password_visible
-            if self.edit_password_entry is None:
-                return
-            self.edit_password_entry.configure(
-                show="" if password_visible else "\u2022"
-            )
-            reveal_btn.configure(
-                text="Hide" if password_visible else "Show"
-            )
+        def toggle_edit_secret() -> None:
+            nonlocal secret_visible
+            secret_visible = not secret_visible
+            show = "" if secret_visible else "\u2022"
+            if self.edit_password_entry is not None:
+                self.edit_password_entry.configure(show=show)
+            if self.edit_pin_entry is not None:
+                self.edit_pin_entry.configure(show=show)
+            reveal_btn.configure(text="Hide" if secret_visible else "Show")
 
         reveal_btn = ctk.CTkButton(
-            master=self.edit_content_frm,
+            master=secret_input_row,
             text="Show",
-            command=toggle_edit_password,
+            command=toggle_edit_secret,
             width=scale(0.052),
             height=scale_v(0.055),
             fg_color="#202B42",
@@ -1073,7 +1454,63 @@ class EntryLogic:
             border_color="#34425F",
             corner_radius=scale(0.006)
         )
-        reveal_btn.grid(row=0, column=1)
+        reveal_btn.grid(
+            row=0,
+            column=1,
+        )
+
+        if entry_type == "Card":
+            ctk.CTkLabel(
+                master=self.edit_content_frm,
+                text="EXPIRY DATE",
+                **label_style,
+            ).grid(
+                row=2,
+                column=0,
+                sticky="ew",
+                padx=(0, padx(0.006)),
+                pady=(pady(0.014), 0),
+            )
+            ctk.CTkLabel(
+                master=self.edit_content_frm,
+                text="PIN",
+                **label_style,
+            ).grid(
+                row=2,
+                column=1,
+                sticky="ew",
+                padx=(padx(0.006), 0),
+                pady=(pady(0.014), 0),
+            )
+            self.edit_expiry_entry = ctk.CTkEntry(
+                master=self.edit_content_frm,
+                placeholder_text="MM/YY",
+                **entry_style,
+            )
+            self.edit_expiry_entry.insert(
+                0, self.edit_content_drafts["card_expiry"]
+            )
+            self.edit_expiry_entry.grid(
+                row=3,
+                column=0,
+                sticky="ew",
+                padx=(0, padx(0.006)),
+                pady=(pady(0.006), 0),
+            )
+            self.edit_pin_entry = ctk.CTkEntry(
+                master=self.edit_content_frm,
+                placeholder_text="Enter PIN",
+                show="\u2022",
+                **entry_style,
+            )
+            self.edit_pin_entry.insert(0, self.edit_content_drafts["card_pin"])
+            self.edit_pin_entry.grid(
+                row=3,
+                column=1,
+                sticky="ew",
+                padx=(padx(0.006), 0),
+                pady=(pady(0.006), 0),
+            )
 
     def _save_edit_shortcut(self):
         """Save the current editor without inserting a newline."""
@@ -1099,7 +1536,7 @@ class EntryLogic:
         dialog.title("Edit entry")
         self.edit_dialog = dialog
         self.edit_entry_id = entry_id
-        self._place_dialog(dialog, scale(0.34), scale_v(0.7))
+        self._place_dialog(dialog, scale(0.34), scale_v(0.82))
         dialog.grid_columnconfigure(0, weight=1)
 
         title_lbl = ctk.CTkLabel(
@@ -1119,7 +1556,10 @@ class EntryLogic:
 
         name_lbl = ctk.CTkLabel(
             master=dialog,
-            text="ENTRY NAME",
+            text={
+                "Card": "CARD NAME",
+                "Note": "TITLE",
+            }.get(str(record["type"]), "ENTRY NAME"),
             font=("Arial", scale(0.009), "bold"),
             text_color=self.MUTED_TEXT,
             anchor="w"
@@ -1130,13 +1570,19 @@ class EntryLogic:
             sticky="ew",
             padx=padx(0.025)
         )
+        self.edit_name_lbl = name_lbl
 
         self.edit_name_entry = ctk.CTkEntry(
             master=dialog,
             height=scale_v(0.055),
             fg_color="#101A2C",
             border_color=self.CARD_BORDER_COLOR,
-            text_color="#FFFFFF"
+            text_color="#FFFFFF",
+            placeholder_text=(
+                "e.g. Recovery instructions"
+                if str(record["type"]) == "Note"
+                else "Enter a name"
+            ),
         )
         self.edit_name_entry.insert(0, str(record["name"]))
         self.edit_name_entry.grid(
@@ -1212,10 +1658,22 @@ class EntryLogic:
         )
         self.edit_content_frm.grid_columnconfigure(0, weight=1)
         current_content = str(record["password"])
-        self.edit_content_drafts = {
-            "password": current_content,
-            "note": current_content,
-        }
+        self.edit_content_drafts = self._empty_edit_drafts()
+        if selected_type == "Login":
+            self.edit_content_drafts["login_password"] = current_content
+            self.edit_content_drafts["login_service"] = str(
+                record.get("service", "")
+            )
+        elif selected_type == "Card":
+            self.edit_content_drafts["card_number"] = current_content
+            self.edit_content_drafts["card_pin"] = str(record.get("pin", ""))
+            self.edit_content_drafts["card_expiry"] = str(
+                record.get("expiry", "")
+            )
+        elif selected_type == "Note":
+            self.edit_content_drafts["note"] = current_content
+        else:
+            self.edit_content_drafts["other_secret"] = current_content
         self._render_edit_content_input(selected_type)
 
         self.edit_error_lbl = ctk.CTkLabel(
@@ -1308,23 +1766,64 @@ class EntryLogic:
 
         name = self.edit_name_entry.get().strip()
         entry_type = self.edit_type_var.get()
+        service = ""
+        pin = ""
+        expiry = ""
         if entry_type == "Note":
             if self.edit_note_textbox is None:
                 return
             content = self.edit_note_textbox.get("1.0", "end-1c")
+        elif entry_type == "Card":
+            if (
+                self.edit_password_entry is None
+                or self.edit_pin_entry is None
+                or self.edit_expiry_entry is None
+            ):
+                return
+            content = self.edit_password_entry.get()
+            pin = self.edit_pin_entry.get().strip()
+            expiry = self.edit_expiry_entry.get().strip()
         else:
             if self.edit_password_entry is None:
                 return
             content = self.edit_password_entry.get()
+            if entry_type == "Login" and self.edit_service_entry is not None:
+                service = self.edit_service_entry.get().strip()
 
-        if not name or not content.strip():
+        if not name:
             if self.edit_error_lbl is not None:
                 self.edit_error_lbl.configure(
                     text=(
-                        "Entry name and note content are required."
+                        "Title is required."
                         if entry_type == "Note"
-                        else "Entry name and password are required."
+                        else (
+                            "Card name is required."
+                            if entry_type == "Card"
+                            else "Entry name is required."
+                        )
                     )
+                )
+            return
+        if not content.strip():
+            if self.edit_error_lbl is not None:
+                content_name = {
+                    "Note": "Note content",
+                    "Card": "Card number",
+                }.get(entry_type, "Password")
+                self.edit_error_lbl.configure(text=f"{content_name} is required.")
+            return
+        if entry_type == "Card" and (not pin or not expiry):
+            if self.edit_error_lbl is not None:
+                self.edit_error_lbl.configure(
+                    text="Card PIN and expiry date are required."
+                )
+            return
+        if entry_type == "Card" and not re.fullmatch(
+            r"(?:0[1-9]|1[0-2])/\d{2}", expiry
+        ):
+            if self.edit_error_lbl is not None:
+                self.edit_error_lbl.configure(
+                    text="Enter the expiry date as MM/YY."
                 )
             return
 
@@ -1333,7 +1832,10 @@ class EntryLogic:
             entry_id,
             name,
             content,
-            entry_type
+            entry_type,
+            service=service,
+            pin=pin,
+            expiry=expiry,
         ):
             if self.edit_error_lbl is not None:
                 self.edit_error_lbl.configure(
@@ -1589,6 +2091,31 @@ class EntryLogic:
 
             for entry_id, record in visible_records.items():
                 entry_name = str(record["name"])
+                entry_type = str(record["type"])
+                if entry_type == "Login":
+                    service = str(record.get("service", "")).strip()
+                    entry_subtitle = (
+                        f"{service}  \u00b7  LOGIN" if service else "LOGIN"
+                    )
+                elif entry_type == "Card":
+                    compact_number = "".join(
+                        character
+                        for character in str(record["password"])
+                        if character.isalnum()
+                    )
+                    number_hint = (
+                        f"\u2022\u2022\u2022\u2022 {compact_number[-4:]}"
+                        if compact_number
+                        else "CARD"
+                    )
+                    expiry = str(record.get("expiry", "")).strip()
+                    entry_subtitle = (
+                        f"{number_hint}  \u00b7  Expires {expiry}"
+                        if expiry
+                        else number_hint
+                    )
+                else:
+                    entry_subtitle = entry_type.upper()
                 self.entry = ctk.CTkFrame(
                     master=self.entries_frm,
                     border_width=1,
@@ -1604,12 +2131,23 @@ class EntryLogic:
                     master=self.entry,
                     text=entry_name,
                     width=scale(0.2),
-                    height=scale_v(0.075),
+                    height=scale_v(0.042),
                     font=("Arial", scale(0.012), "bold"),
                     text_color="#F4F6FB",
                     anchor="w",
                     justify="left",
                     wraplength=scale(0.19)
+                )
+                entry_subtitle_lbl = ctk.CTkLabel(
+                    master=self.entry,
+                    text=entry_subtitle,
+                    width=scale(0.2),
+                    height=scale_v(0.026),
+                    font=("Arial", scale(0.0085)),
+                    text_color=self.MUTED_TEXT,
+                    anchor="w",
+                    justify="left",
+                    wraplength=scale(0.19),
                 )
 
                 is_trashed = record.get("deleted_at") is not None
@@ -1658,6 +2196,12 @@ class EntryLogic:
                         record_id
                     )
                 )
+                entry_subtitle_lbl.bind(
+                    "<Button-1>",
+                    lambda event, record_id=entry_id: self.open_entry(
+                        record_id
+                    )
+                )
 
                 self.entry.pack(
                     fill="x",
@@ -1670,12 +2214,21 @@ class EntryLogic:
                     column=0,
                     sticky="ew",
                     padx=(padx(0.018), padx(0.004)),
-                    pady=pady(0.008)
+                    pady=(pady(0.009), 0)
+                )
+
+                entry_subtitle_lbl.grid(
+                    row=1,
+                    column=0,
+                    sticky="ew",
+                    padx=(padx(0.018), padx(0.004)),
+                    pady=(0, pady(0.009)),
                 )
 
                 favorite_btn.grid(
                     row=0,
                     column=1,
+                    rowspan=2,
                     padx=(padx(0.004), padx(0.012)),
                     pady=pady(0.008)
                 )
@@ -1706,9 +2259,14 @@ class EntryLogic:
         self._cancel_password_hide_timer()
         self.selected_entry_id = None
         self.selected_entry_name = None
+        self.selected_entry_type = ""
         self.selected_password = ""
+        self.selected_service = ""
+        self.selected_pin = ""
+        self.selected_expiry = ""
         self.password_is_visible = False
         self.password_value_lbl = None
+        self.pin_value_lbl = None
         self.password_toggle_btn = None
         self.copy_password_btn = None
         self.copy_button_default_text = "Copy password"
@@ -1724,6 +2282,10 @@ class EntryLogic:
         name: str,
         content: str,
         entry_type: str,
+        *,
+        service: str = "",
+        pin: str = "",
+        expiry: str = "",
     ) -> str | None:
         """Encrypt a validated dialog submission and refresh the view."""
 
@@ -1733,6 +2295,9 @@ class EntryLogic:
                 name,
                 content,
                 entry_type,
+                service=service,
+                pin=pin,
+                expiry=expiry,
             )
             self.refresh_entries()
         except Exception:
